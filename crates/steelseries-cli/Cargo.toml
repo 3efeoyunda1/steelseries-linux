@@ -1,0 +1,20 @@
+[package]
+name = "steelseries-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "steelseriesctl"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+steelseries-core = { path = "../steelseries-core" }
+
+[lints]
+workspace = true
+

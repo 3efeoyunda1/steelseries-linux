@@ -1,0 +1,22 @@
+# Rust / Cargo build output
+/target/
+**/*.rs.bk
+*.profraw
+
+# Logs
+*.log
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local development tooling
+.agents/
+.codex/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db

@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "crates/steelseries-core",
+    "crates/steelseries-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT"
+authors = ["3efeoyunda1"]
+repository = "https://github.com/3efeoyunda1/steelseries-linux-cli"
+
+[workspace.dependencies]
+clap = { version = "4.5", features = ["derive"] }
+hidapi = "2.6"
+thiserror = "2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
