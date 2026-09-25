@@ -189,7 +189,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "steelseries-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "steelseries-core",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "steelseries-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hidapi",
  "thiserror",

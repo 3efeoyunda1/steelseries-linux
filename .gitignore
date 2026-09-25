@@ -1,5 +1,32 @@
-# Rust / Cargo build output
+# Rust
 /target/
+
+# Final release artifacts
+/dist/
+
+# Arch makepkg working/output directories
+/arch/pkg/
+/arch/src/
+/arch/*.pkg.tar.zst
+/arch/*.tar.gz
+/arch/*.tar.zst
+
+# Generic generated package artifacts
+*.pkg.tar.zst
+*.deb
+*.rpm
+*.src.rpm
+*.tar.xz
+
+# Debian build artifacts
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log
+/debian/steelseries-linux/
+
+# Other Rust-generated files
 **/*.rs.bk
 *.profraw
 

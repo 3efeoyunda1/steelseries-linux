@@ -1,15 +1,20 @@
 use std::{
     convert::TryFrom,
+    ffi::CString,
     time::{Duration, Instant},
 };
 
 use hidapi::{HidApi, HidDevice};
 use thiserror::Error;
 
-use crate::device::{DpiConfig, DpiStage, PollingConfig, PollingRate};
+use crate::device::{
+    BatteryStatus, ConnectionType, DeviceIdentity, DpiConfig, DpiStage, PhysicalDevice,
+    PollingConfig, PollingRate,
+};
 
 pub const VENDOR_ID: u16 = 0x1038;
-pub const PRODUCT_ID: u16 = 0x1890;
+pub const PID_RECEIVER: u16 = 0x1890;
+pub const PID_WIRED: u16 = 0x1892;
 pub const CONFIG_INTERFACE: i32 = 3;
 
 pub const CMD_COMMIT: u8 = 0x11;
@@ -17,24 +22,94 @@ pub const CMD_SET_DPI: u8 = 0x6d;
 pub const CMD_GET_DPI: u8 = 0xad;
 pub const CMD_SET_POLLING: u8 = 0x6b;
 pub const CMD_GET_POLLING: u8 = 0xab;
+pub const CMD_GET_BATTERY: u8 = 0x92;
+pub const CMD_GET_DEVICE_IDENTITY: u8 = 0xf0;
+pub const CMD_GET_RECEIVER_LINK: u8 = 0xbc;
 
 const REPORT_SIZE: usize = 64;
 const WRITE_SIZE: usize = REPORT_SIZE + 1;
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 const MAX_DPI_STAGES: usize = 5;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointKind {
+    Receiver2_4Ghz,
+    Wired,
+}
+
+struct IdentifiedEndpoint<T> {
+    identity: DeviceIdentity,
+    kind: EndpointKind,
+    endpoint: T,
+}
+
+struct EndpointPair<T> {
+    identity: DeviceIdentity,
+    wired: Option<T>,
+    receiver: Option<T>,
+}
+
+impl<T> EndpointPair<T> {
+    fn physical_device(&self) -> PhysicalDevice {
+        PhysicalDevice {
+            identity: self.identity.clone(),
+            active_connection: if self.wired.is_some() {
+                ConnectionType::Wired
+            } else {
+                ConnectionType::Wireless2_4Ghz
+            },
+            wired_endpoint_available: self.wired.is_some(),
+            receiver_endpoint_available: self.receiver.is_some(),
+        }
+    }
+
+    fn into_selected_endpoint(self) -> T {
+        self.wired
+            .or(self.receiver)
+            .expect("endpoint pair is nonempty")
+    }
+}
+
+struct EndpointDiscovery<T> {
+    pairs: Vec<EndpointPair<T>>,
+    supported_usb_present: bool,
+    config_interface_present: bool,
+    unlinked_receiver_present: bool,
+    first_error: Option<Error>,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("SteelSeries Aerox 3 Wireless Gen 2 receiver is not connected")]
+    #[error(
+        "SteelSeries Aerox 3 Wireless Gen 2 is not connected over wired USB or a linked 2.4 GHz receiver"
+    )]
     DeviceNotConnected,
-    #[error("SteelSeries Aerox 3 Wireless Gen 2 receiver was found, but configuration HID interface 3 was not")]
+    #[error(
+        "SteelSeries Aerox 3 Wireless Gen 2 USB endpoint was found, but configuration HID interface 3 was not"
+    )]
     InterfaceNotFound,
-    #[error("multiple SteelSeries Aerox 3 Wireless Gen 2 configuration interfaces were found; disconnect all but one receiver")]
-    MultipleDevices,
+    #[error(
+        "multiple supported SteelSeries devices are connected:{available}\n\nSpecify one with --device <ID>."
+    )]
+    MultipleDevices { available: String },
+    #[error("no usable SteelSeries device with ID {requested} was found.{available}")]
+    RequestedDeviceNotFound {
+        requested: String,
+        available: String,
+    },
+    #[error("Aerox 3 Wireless Gen 2 receiver found, but the mouse is not connected over 2.4 GHz")]
+    ReceiverLinkUnavailable,
     #[error("failed to initialize HID access: {0}")]
     HidInitialization(#[source] hidapi::HidError),
     #[error("failed to open SteelSeries Aerox 3 Wireless Gen 2 configuration interface: {0}")]
     Open(#[source] hidapi::HidError),
+    #[error(
+        "failed to open SteelSeries Aerox 3 Wireless Gen 2 configuration interface: {source}\n\nSteelSeries Linux udev permissions may not be installed or active.\nInstall the project's udev rules and reconnect the device."
+    )]
+    OpenPermissionDenied {
+        #[source]
+        source: hidapi::HidError,
+    },
     #[error("failed to write HID command 0x{command:02x}: {source}")]
     Write {
         command: u8,
@@ -55,15 +130,15 @@ pub enum Error {
         #[source]
         source: hidapi::HidError,
     },
-    #[error("malformed response to command 0x{command:02x}: expected at least {expected} bytes, received {actual}")]
+    #[error(
+        "malformed response to command 0x{command:02x}: expected at least {expected} bytes, received {actual}"
+    )]
     MalformedResponse {
         command: u8,
         expected: usize,
         actual: usize,
     },
-    #[error(
-        "unexpected response command byte: expected 0x{expected:02x}, received 0x{actual:02x}"
-    )]
+    #[error("unexpected response command byte: expected 0x{expected:02x}, received 0x{actual:02x}")]
     UnexpectedCommand { expected: u8, actual: u8 },
     #[error("DPI configuration must contain between 1 and 5 stages (received {0})")]
     InvalidDpiStageCount(usize),
@@ -77,6 +152,20 @@ pub enum Error {
     UnsupportedPollingRate(u16),
     #[error("wired polling rate supports a maximum of 1000 Hz")]
     WiredPollingTooHigh,
+    #[error("malformed battery response: invalid charging state 0x{0:02x}; expected 0x00 or 0x01")]
+    InvalidBatteryChargingState(u8),
+    #[error(
+        "malformed battery response: invalid percentage {0}; expected 0..=100 or unavailable marker 0xff"
+    )]
+    InvalidBatteryPercentage(u8),
+    #[error("device identity response is empty")]
+    EmptyDeviceIdentity,
+    #[error("malformed device identity response: missing zero terminator")]
+    UnterminatedDeviceIdentity,
+    #[error("malformed device identity response: identity is not ASCII")]
+    InvalidDeviceIdentity,
+    #[error("invalid receiver link state 0x{0:02x}; expected 0x00 or 0x01")]
+    InvalidReceiverLinkState(u8),
 }
 
 impl TryFrom<u16> for PollingRate {
@@ -130,44 +219,135 @@ pub struct Aerox3WirelessGen2 {
 
 impl Aerox3WirelessGen2 {
     pub fn open() -> Result<Self, Error> {
+        Self::open_selected(None)
+    }
+
+    pub fn open_selected(requested_identity: Option<&str>) -> Result<Self, Error> {
         let api = HidApi::new().map_err(Error::HidInitialization)?;
-        Self::open_with_api(&api)
-    }
+        let discovery = Self::discover_with_api(&api);
 
-    fn open_with_api(api: &HidApi) -> Result<Self, Error> {
-        let product_matches: Vec<_> = api
-            .device_list()
-            .filter(|info| info.vendor_id() == VENDOR_ID && info.product_id() == PRODUCT_ID)
-            .collect();
-
-        if product_matches.is_empty() {
-            return Err(Error::DeviceNotConnected);
+        if discovery.pairs.is_empty() {
+            if discovery.supported_usb_present && !discovery.config_interface_present {
+                return Err(Error::InterfaceNotFound);
+            }
+            if let Some(error) = discovery.first_error {
+                return Err(error);
+            }
+            if requested_identity.is_none() && discovery.unlinked_receiver_present {
+                return Err(Error::ReceiverLinkUnavailable);
+            }
         }
 
-        let interface_matches: Vec<_> = product_matches
-            .into_iter()
-            .filter(|info| info.interface_number() == CONFIG_INTERFACE)
-            .collect();
-
-        match interface_matches.as_slice() {
-            [] => Err(Error::InterfaceNotFound),
-            [info] => info
-                .open_device(api)
-                .map(|device| Self { device })
-                .map_err(Error::Open),
-            _ => Err(Error::MultipleDevices),
-        }
+        let pair = select_endpoint_pair(discovery.pairs, requested_identity)?;
+        Ok(Self {
+            device: pair.into_selected_endpoint(),
+        })
     }
 
-    /// Returns whether the exact receiver and configuration interface are enumerated.
+    pub fn discover() -> Result<Vec<PhysicalDevice>, Error> {
+        let api = HidApi::new().map_err(Error::HidInitialization)?;
+        let discovery = Self::discover_with_api(&api);
+
+        if discovery.pairs.is_empty() {
+            if discovery.supported_usb_present && !discovery.config_interface_present {
+                return Err(Error::InterfaceNotFound);
+            }
+            if let Some(error) = discovery.first_error {
+                return Err(error);
+            }
+        }
+
+        Ok(discovery
+            .pairs
+            .iter()
+            .map(EndpointPair::physical_device)
+            .collect())
+    }
+
+    /// Returns whether at least one usable physical mouse is discoverable.
     pub fn is_connected() -> Result<bool, Error> {
-        let api = HidApi::new().map_err(Error::HidInitialization)?;
-        let connected = api.device_list().any(|info| {
-            info.vendor_id() == VENDOR_ID
-                && info.product_id() == PRODUCT_ID
-                && info.interface_number() == CONFIG_INTERFACE
-        });
-        Ok(connected)
+        Ok(!Self::discover()?.is_empty())
+    }
+
+    fn discover_with_api(api: &HidApi) -> EndpointDiscovery<HidDevice> {
+        let mut supported_usb_present = false;
+        let mut config_interface_present = false;
+        let mut candidates: Vec<(EndpointKind, CString)> = Vec::new();
+
+        for info in api.device_list() {
+            let Some(kind) = supported_endpoint_kind(info.vendor_id(), info.product_id()) else {
+                continue;
+            };
+            supported_usb_present = true;
+            if info.interface_number() == CONFIG_INTERFACE {
+                config_interface_present = true;
+                candidates.push((kind, info.path().to_owned()));
+            }
+        }
+
+        let mut identified = Vec::new();
+        let mut unlinked_receiver_present = false;
+        let mut first_error = None;
+
+        for (kind, path) in candidates {
+            let device = match api.open_path(path.as_c_str()) {
+                Ok(device) => device,
+                Err(error) => {
+                    first_error.get_or_insert_with(|| open_error(error));
+                    continue;
+                }
+            };
+            let endpoint = Self { device };
+
+            if kind == EndpointKind::Receiver2_4Ghz {
+                match endpoint.get_receiver_link_active() {
+                    Ok(false) => {
+                        unlinked_receiver_present = true;
+                        continue;
+                    }
+                    Ok(true) => {}
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                }
+            }
+
+            match endpoint.get_device_identity() {
+                Ok(identity) => identified.push(IdentifiedEndpoint {
+                    identity,
+                    kind,
+                    endpoint: endpoint.device,
+                }),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+
+        EndpointDiscovery {
+            pairs: group_identified_endpoints(identified),
+            supported_usb_present,
+            config_interface_present,
+            unlinked_receiver_present,
+            first_error,
+        }
+    }
+
+    fn get_device_identity(&self) -> Result<DeviceIdentity, Error> {
+        let response = self.send_command_and_expect(
+            command_report(CMD_GET_DEVICE_IDENTITY),
+            CMD_GET_DEVICE_IDENTITY,
+        )?;
+        parse_device_identity_response(&response)
+    }
+
+    fn get_receiver_link_active(&self) -> Result<bool, Error> {
+        let response = self.send_command_and_expect(
+            command_report(CMD_GET_RECEIVER_LINK),
+            CMD_GET_RECEIVER_LINK,
+        )?;
+        parse_receiver_link_response(&response)
     }
 
     pub fn get_dpi_config(&self) -> Result<DpiConfig, Error> {
@@ -192,6 +372,12 @@ impl Aerox3WirelessGen2 {
         let response =
             self.send_command_and_expect(command_report(CMD_GET_POLLING), CMD_GET_POLLING)?;
         parse_polling_response(&response)
+    }
+
+    pub fn get_battery_status(&self) -> Result<BatteryStatus, Error> {
+        let response =
+            self.send_command_and_expect(command_report(CMD_GET_BATTERY), CMD_GET_BATTERY)?;
+        parse_battery_response(&response)
     }
 
     /// Changes wireless polling while preserving wired polling. Call [`Self::commit`] to persist it.
@@ -271,6 +457,124 @@ impl Aerox3WirelessGen2 {
         }
         Ok(())
     }
+}
+
+fn supported_endpoint_kind(vendor_id: u16, product_id: u16) -> Option<EndpointKind> {
+    if vendor_id != VENDOR_ID {
+        return None;
+    }
+    match product_id {
+        PID_RECEIVER => Some(EndpointKind::Receiver2_4Ghz),
+        PID_WIRED => Some(EndpointKind::Wired),
+        _ => None,
+    }
+}
+
+fn select_endpoint_pair<T>(
+    mut pairs: Vec<EndpointPair<T>>,
+    requested_identity: Option<&str>,
+) -> Result<EndpointPair<T>, Error> {
+    if let Some(requested) = requested_identity {
+        if let Some(index) = pairs
+            .iter()
+            .position(|pair| pair.identity.as_str() == requested)
+        {
+            return Ok(pairs.swap_remove(index));
+        }
+        return Err(Error::RequestedDeviceNotFound {
+            requested: requested.to_owned(),
+            available: available_identities_suffix(&pairs),
+        });
+    }
+
+    match pairs.len() {
+        0 => Err(Error::DeviceNotConnected),
+        1 => Ok(pairs.pop().expect("one endpoint pair exists")),
+        _ => Err(Error::MultipleDevices {
+            available: ambiguity_identity_list(&pairs),
+        }),
+    }
+}
+
+fn sorted_identities<T>(pairs: &[EndpointPair<T>]) -> Vec<&str> {
+    let mut identities: Vec<_> = pairs.iter().map(|pair| pair.identity.as_str()).collect();
+    identities.sort_unstable();
+    identities
+}
+
+fn ambiguity_identity_list<T>(pairs: &[EndpointPair<T>]) -> String {
+    sorted_identities(pairs)
+        .into_iter()
+        .map(|identity| format!("\n  {identity}"))
+        .collect()
+}
+
+fn available_identities_suffix<T>(pairs: &[EndpointPair<T>]) -> String {
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let identities = sorted_identities(pairs)
+        .into_iter()
+        .map(|identity| format!("  {identity}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("\n\nAvailable device IDs:\n{identities}")
+}
+
+fn open_error(error: hidapi::HidError) -> Error {
+    if hid_error_is_permission_denied(&error) {
+        Error::OpenPermissionDenied { source: error }
+    } else {
+        Error::Open(error)
+    }
+}
+
+fn hid_error_is_permission_denied(error: &hidapi::HidError) -> bool {
+    match error {
+        hidapi::HidError::IoError { error } => error.kind() == std::io::ErrorKind::PermissionDenied,
+        hidapi::HidError::HidApiError { message } => {
+            let message = message.to_ascii_lowercase();
+            message.contains("permission denied") || message.contains("access denied")
+        }
+        _ => false,
+    }
+}
+
+fn group_identified_endpoints<T>(
+    endpoints: impl IntoIterator<Item = IdentifiedEndpoint<T>>,
+) -> Vec<EndpointPair<T>> {
+    let mut pairs: Vec<EndpointPair<T>> = Vec::new();
+
+    for endpoint in endpoints {
+        let IdentifiedEndpoint {
+            identity,
+            kind,
+            endpoint,
+        } = endpoint;
+        if let Some(pair) = pairs.iter_mut().find(|pair| pair.identity == identity) {
+            match kind {
+                EndpointKind::Wired => {
+                    pair.wired.get_or_insert(endpoint);
+                }
+                EndpointKind::Receiver2_4Ghz => {
+                    pair.receiver.get_or_insert(endpoint);
+                }
+            }
+            continue;
+        }
+
+        let (wired, receiver) = match kind {
+            EndpointKind::Wired => (Some(endpoint), None),
+            EndpointKind::Receiver2_4Ghz => (None, Some(endpoint)),
+        };
+        pairs.push(EndpointPair {
+            identity,
+            wired,
+            receiver,
+        });
+    }
+
+    pairs
 }
 
 fn wait_for_expected_response<F>(
@@ -426,6 +730,50 @@ fn parse_polling_response(response: &[u8]) -> Result<PollingConfig, Error> {
     Ok(config)
 }
 
+fn parse_battery_response(response: &[u8]) -> Result<BatteryStatus, Error> {
+    ensure_response_header(response, CMD_GET_BATTERY, 3)?;
+    let charging = match response[1] {
+        0x00 => false,
+        0x01 => true,
+        value => return Err(Error::InvalidBatteryChargingState(value)),
+    };
+
+    match response[2] {
+        0xff => Ok(BatteryStatus::Unavailable),
+        percent @ 0..=100 => Ok(BatteryStatus::Available { percent, charging }),
+        value => Err(Error::InvalidBatteryPercentage(value)),
+    }
+}
+
+fn parse_device_identity_response(response: &[u8]) -> Result<DeviceIdentity, Error> {
+    ensure_response_header(response, CMD_GET_DEVICE_IDENTITY, 2)?;
+    let identity_end = response[1..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or(Error::UnterminatedDeviceIdentity)?;
+    if identity_end == 0 {
+        return Err(Error::EmptyDeviceIdentity);
+    }
+
+    let identity_bytes = &response[1..1 + identity_end];
+    if !identity_bytes.is_ascii() {
+        return Err(Error::InvalidDeviceIdentity);
+    }
+    let identity = std::str::from_utf8(identity_bytes)
+        .map_err(|_| Error::InvalidDeviceIdentity)?
+        .to_owned();
+    Ok(DeviceIdentity::new(identity))
+}
+
+fn parse_receiver_link_response(response: &[u8]) -> Result<bool, Error> {
+    ensure_response_header(response, CMD_GET_RECEIVER_LINK, 2)?;
+    match response[1] {
+        0x00 => Ok(false),
+        0x01 => Ok(true),
+        value => Err(Error::InvalidReceiverLinkState(value)),
+    }
+}
+
 fn encode_polling_config(config: PollingConfig) -> Result<[u8; REPORT_SIZE], Error> {
     validate_wired_polling_rate(config.wired)?;
     let mut report = command_report(CMD_SET_POLLING);
@@ -511,6 +859,30 @@ mod tests {
         }
     }
 
+    fn identity(value: &str) -> DeviceIdentity {
+        DeviceIdentity::new(value.to_owned())
+    }
+
+    fn identified_endpoint<T>(
+        kind: EndpointKind,
+        identity_value: &str,
+        endpoint: T,
+    ) -> IdentifiedEndpoint<T> {
+        IdentifiedEndpoint {
+            identity: identity(identity_value),
+            kind,
+            endpoint,
+        }
+    }
+
+    fn selectable_pair(identity_value: &str) -> EndpointPair<&'static str> {
+        EndpointPair {
+            identity: identity(identity_value),
+            wired: Some("wired"),
+            receiver: None,
+        }
+    }
+
     #[test]
     fn parses_dpi_response() {
         let mut response = [0_u8; REPORT_SIZE];
@@ -529,7 +901,9 @@ mod tests {
         let report = encode_dpi_config(&scalar_config(&[400, 800, 1600], 1)).unwrap();
         assert_eq!(
             &report[..18],
-            &[0x6d, 3, 1, 0x90, 1, 0x90, 1, 0, 0x20, 3, 0x20, 3, 0, 0x40, 6, 0x40, 6, 0]
+            &[
+                0x6d, 3, 1, 0x90, 1, 0x90, 1, 0, 0x20, 3, 0x20, 3, 0, 0x40, 6, 0x40, 6, 0
+            ]
         );
         assert!(report[18..].iter().all(|byte| *byte == 0));
     }
@@ -601,6 +975,74 @@ mod tests {
                 wired: PollingRate::Hz1000,
             }
         );
+    }
+
+    #[test]
+    fn parses_available_battery_not_charging() {
+        assert_eq!(
+            parse_battery_response(&[0x92, 0x00, 0x14]).unwrap(),
+            BatteryStatus::Available {
+                percent: 20,
+                charging: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_available_battery_charging() {
+        assert_eq!(
+            parse_battery_response(&[0x92, 0x01, 0x15]).unwrap(),
+            BatteryStatus::Available {
+                percent: 21,
+                charging: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_full_battery_not_charging() {
+        assert_eq!(
+            parse_battery_response(&[0x92, 0x00, 0x64]).unwrap(),
+            BatteryStatus::Available {
+                percent: 100,
+                charging: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_unavailable_battery_marker() {
+        assert_eq!(
+            parse_battery_response(&[0x92, 0x00, 0xff]).unwrap(),
+            BatteryStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn rejects_unexpected_battery_response_command() {
+        assert!(matches!(
+            parse_battery_response(&[0x91, 0x00, 0x14]),
+            Err(Error::UnexpectedCommand {
+                expected: CMD_GET_BATTERY,
+                actual: 0x91,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_battery_charging_state() {
+        assert!(matches!(
+            parse_battery_response(&[0x92, 0x02, 0x14]),
+            Err(Error::InvalidBatteryChargingState(0x02))
+        ));
+    }
+
+    #[test]
+    fn rejects_battery_percentage_above_100() {
+        assert!(matches!(
+            parse_battery_response(&[0x92, 0x00, 0x65]),
+            Err(Error::InvalidBatteryPercentage(101))
+        ));
     }
 
     #[test]
@@ -677,6 +1119,18 @@ mod tests {
     }
 
     #[test]
+    fn identity_response_matching_skips_stale_unrelated_report() {
+        let identity_response = protocol_report(CMD_GET_DEVICE_IDENTITY);
+        let matched = match_report_sequence(
+            [protocol_report(0x40), identity_response],
+            CMD_GET_DEVICE_IDENTITY,
+        )
+        .unwrap();
+
+        assert_eq!(matched, identity_response);
+    }
+
+    #[test]
     fn response_matching_timeout_reports_observed_commands() {
         let error = match_report_sequence(
             [
@@ -698,5 +1152,289 @@ mod tests {
             error.to_string(),
             "timed out waiting for response 0xad (observed: 0x6b, 0x11)"
         );
+    }
+
+    #[test]
+    fn groups_matching_wired_and_linked_receiver_as_one_wired_device() {
+        let pairs = group_identified_endpoints([
+            identified_endpoint(EndpointKind::Wired, "AAA", "wired"),
+            identified_endpoint(EndpointKind::Receiver2_4Ghz, "AAA", "receiver"),
+        ]);
+
+        assert_eq!(pairs.len(), 1);
+        let device = pairs[0].physical_device();
+        assert_eq!(device.identity, identity("AAA"));
+        assert_eq!(device.active_connection, ConnectionType::Wired);
+        assert!(device.wired_endpoint_available);
+        assert!(device.receiver_endpoint_available);
+    }
+
+    #[test]
+    fn selects_only_device_without_requested_identity() {
+        let selected = select_endpoint_pair(vec![selectable_pair("AAA")], None).unwrap();
+        assert_eq!(selected.identity, identity("AAA"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_devices_without_requested_identity() {
+        let result =
+            select_endpoint_pair(vec![selectable_pair("BBB"), selectable_pair("AAA")], None);
+
+        assert!(matches!(&result, Err(Error::MultipleDevices { .. })));
+        let error = result.err().unwrap().to_string();
+        assert!(error.contains("  AAA\n  BBB"));
+        assert!(error.contains("Specify one with --device <ID>."));
+    }
+
+    #[test]
+    fn selects_explicit_first_device_from_multiple_devices() {
+        let selected = select_endpoint_pair(
+            vec![selectable_pair("AAA"), selectable_pair("BBB")],
+            Some("AAA"),
+        )
+        .unwrap();
+
+        assert_eq!(selected.identity, identity("AAA"));
+    }
+
+    #[test]
+    fn selects_explicit_second_device_from_multiple_devices() {
+        let selected = select_endpoint_pair(
+            vec![selectable_pair("AAA"), selectable_pair("BBB")],
+            Some("BBB"),
+        )
+        .unwrap();
+
+        assert_eq!(selected.identity, identity("BBB"));
+    }
+
+    #[test]
+    fn rejects_requested_identity_that_is_not_present() {
+        let result = select_endpoint_pair(
+            vec![selectable_pair("AAA"), selectable_pair("BBB")],
+            Some("CCC"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::RequestedDeviceNotFound { ref requested, .. }) if requested == "CCC"
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_device_list_without_requested_identity() {
+        let pairs: Vec<EndpointPair<()>> = Vec::new();
+        assert!(matches!(
+            select_endpoint_pair(pairs, None),
+            Err(Error::DeviceNotConnected)
+        ));
+    }
+
+    #[test]
+    fn reports_requested_identity_not_found_when_no_devices_are_usable() {
+        let pairs: Vec<EndpointPair<()>> = Vec::new();
+        assert!(matches!(
+            select_endpoint_pair(pairs, Some("AAA")),
+            Err(Error::RequestedDeviceNotFound { ref requested, .. }) if requested == "AAA"
+        ));
+    }
+
+    #[test]
+    fn matching_endpoint_pair_does_not_create_selection_ambiguity() {
+        let pairs = group_identified_endpoints([
+            identified_endpoint(EndpointKind::Wired, "AAA", "wired"),
+            identified_endpoint(EndpointKind::Receiver2_4Ghz, "AAA", "receiver"),
+        ]);
+
+        assert!(select_endpoint_pair(pairs, None).is_ok());
+    }
+
+    #[test]
+    fn unsupported_usb_device_does_not_count_as_supported_endpoint() {
+        let endpoints = [
+            (VENDOR_ID, PID_WIRED),
+            (VENDOR_ID, 0x1824),
+            (0x1234, PID_RECEIVER),
+        ];
+        let supported_count = endpoints
+            .into_iter()
+            .filter_map(|(vendor, product)| supported_endpoint_kind(vendor, product))
+            .count();
+
+        assert_eq!(supported_count, 1);
+    }
+
+    #[test]
+    fn identity_selection_requires_exact_match() {
+        let result = select_endpoint_pair(vec![selectable_pair("AAA123")], Some("AAA"));
+
+        assert!(matches!(result, Err(Error::RequestedDeviceNotFound { .. })));
+    }
+
+    #[test]
+    fn selects_linked_receiver_when_no_wired_endpoint_exists() {
+        let pairs = group_identified_endpoints([identified_endpoint(
+            EndpointKind::Receiver2_4Ghz,
+            "AAA",
+            "receiver",
+        )]);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            pairs[0].physical_device().active_connection,
+            ConnectionType::Wireless2_4Ghz
+        );
+    }
+
+    #[test]
+    fn inactive_receiver_produces_no_usable_mouse_endpoint() {
+        assert!(!parse_receiver_link_response(&[0xbc, 0x00]).unwrap());
+        let endpoints: Vec<IdentifiedEndpoint<()>> = Vec::new();
+        assert!(group_identified_endpoints(endpoints).is_empty());
+    }
+
+    #[test]
+    fn inactive_receiver_does_not_prevent_wired_device_use() {
+        assert!(!parse_receiver_link_response(&[0xbc, 0x00]).unwrap());
+        let pairs =
+            group_identified_endpoints([identified_endpoint(EndpointKind::Wired, "AAA", "wired")]);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            pairs[0].physical_device().active_connection,
+            ConnectionType::Wired
+        );
+    }
+
+    #[test]
+    fn different_identities_produce_two_physical_devices() {
+        let pairs = group_identified_endpoints([
+            identified_endpoint(EndpointKind::Wired, "AAA", "wired"),
+            identified_endpoint(EndpointKind::Receiver2_4Ghz, "BBB", "receiver"),
+        ]);
+
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn matching_identity_is_grouped_exactly_once_regardless_of_endpoint_order() {
+        let pairs = group_identified_endpoints([
+            identified_endpoint(EndpointKind::Receiver2_4Ghz, "AAA", "receiver"),
+            identified_endpoint(EndpointKind::Wired, "AAA", "wired"),
+        ]);
+
+        assert_eq!(pairs.len(), 1);
+        assert!(pairs[0].wired.is_some());
+        assert!(pairs[0].receiver.is_some());
+    }
+
+    #[test]
+    fn parses_verified_device_identity() {
+        let expected = "6271700431492500250";
+        let mut response = protocol_report(CMD_GET_DEVICE_IDENTITY);
+        response[1..1 + expected.len()].copy_from_slice(expected.as_bytes());
+
+        assert_eq!(
+            parse_device_identity_response(&response).unwrap(),
+            identity(expected)
+        );
+    }
+
+    #[test]
+    fn rejects_unexpected_device_identity_response_command() {
+        assert!(matches!(
+            parse_device_identity_response(&[0x40, b'A', 0x00]),
+            Err(Error::UnexpectedCommand {
+                expected: CMD_GET_DEVICE_IDENTITY,
+                actual: 0x40,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_device_identity() {
+        assert!(matches!(
+            parse_device_identity_response(&[0xf0, 0x00]),
+            Err(Error::EmptyDeviceIdentity)
+        ));
+    }
+
+    #[test]
+    fn rejects_unterminated_device_identity() {
+        assert!(matches!(
+            parse_device_identity_response(&[0xf0, b'A']),
+            Err(Error::UnterminatedDeviceIdentity)
+        ));
+    }
+
+    #[test]
+    fn rejects_non_ascii_device_identity() {
+        assert!(matches!(
+            parse_device_identity_response(&[0xf0, 0xff, 0x00]),
+            Err(Error::InvalidDeviceIdentity)
+        ));
+    }
+
+    #[test]
+    fn parses_receiver_link_states() {
+        assert!(!parse_receiver_link_response(&[0xbc, 0x00]).unwrap());
+        assert!(parse_receiver_link_response(&[0xbc, 0x01]).unwrap());
+    }
+
+    #[test]
+    fn rejects_invalid_receiver_link_state() {
+        assert!(matches!(
+            parse_receiver_link_response(&[0xbc, 0x02]),
+            Err(Error::InvalidReceiverLinkState(0x02))
+        ));
+    }
+
+    #[test]
+    fn endpoint_selection_always_prefers_wired_for_matching_identity() {
+        let mut pairs = group_identified_endpoints([
+            identified_endpoint(EndpointKind::Receiver2_4Ghz, "AAA", "receiver"),
+            identified_endpoint(EndpointKind::Wired, "AAA", "wired"),
+        ]);
+
+        assert_eq!(pairs.pop().unwrap().into_selected_endpoint(), "wired");
+    }
+
+    #[test]
+    fn recognizes_io_permission_denied_open_error() {
+        let error = hidapi::HidError::IoError {
+            error: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+
+        assert!(hid_error_is_permission_denied(&error));
+        assert!(matches!(
+            open_error(error),
+            Error::OpenPermissionDenied { .. }
+        ));
+    }
+
+    #[test]
+    fn recognizes_hidapi_permission_denied_open_error() {
+        let error = hidapi::HidError::HidApiError {
+            message: "Failed to open /dev/hidraw7: Permission denied".to_owned(),
+        };
+
+        assert!(hid_error_is_permission_denied(&error));
+        let error = open_error(error);
+        assert!(matches!(error, Error::OpenPermissionDenied { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("SteelSeries Linux udev permissions may not be installed or active")
+        );
+    }
+
+    #[test]
+    fn does_not_treat_unrelated_hid_error_as_permission_denied() {
+        let error = hidapi::HidError::HidApiError {
+            message: "device was disconnected".to_owned(),
+        };
+
+        assert!(!hid_error_is_permission_denied(&error));
+        assert!(matches!(open_error(error), Error::Open(_)));
     }
 }

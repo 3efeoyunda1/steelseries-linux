@@ -1,0 +1,4 @@
+target/release/steelseriesctl usr/bin
+udev/70-steelseries-linux.rules usr/lib/udev/rules.d
+README.md usr/share/doc/steelseries-linux
+LICENSE usr/share/doc/steelseries-linux

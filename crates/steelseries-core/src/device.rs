@@ -68,3 +68,52 @@ pub struct PollingConfig {
     pub wireless: PollingRate,
     pub wired: PollingRate,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatteryStatus {
+    Available { percent: u8, charging: bool },
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeviceIdentity(String);
+
+impl DeviceIdentity {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DeviceIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionType {
+    Wired,
+    Wireless2_4Ghz,
+}
+
+impl fmt::Display for ConnectionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Wired => f.write_str("Wired"),
+            Self::Wireless2_4Ghz => f.write_str("2.4 GHz"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalDevice {
+    pub identity: DeviceIdentity,
+    pub active_connection: ConnectionType,
+    pub wired_endpoint_available: bool,
+    pub receiver_endpoint_available: bool,
+}

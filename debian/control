@@ -1,0 +1,17 @@
+Source: steelseries-linux
+Section: utils
+Priority: optional
+Maintainer: 3efeoyunda1 <3efeoyunda1@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), cargo, rustc, pkg-config, libudev-dev
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/3efeoyunda1/steelseries-linux
+
+Package: steelseries-linux
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, udev
+Description: Linux configuration CLI for supported SteelSeries devices
+ SteelSeries Linux provides native userspace configuration for supported
+ SteelSeries hardware. It currently supports DPI, polling rate, battery
+ status, physical-device discovery, and endpoint selection for the
+ SteelSeries Aerox 3 Wireless Gen 2.

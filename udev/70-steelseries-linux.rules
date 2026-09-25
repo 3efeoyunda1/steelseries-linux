@@ -1,0 +1,5 @@
+# SteelSeries Aerox 3 Wireless Gen 2 — 2.4 GHz receiver configuration interface
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1890", TAG+="uaccess"
+
+# SteelSeries Aerox 3 Wireless Gen 2 — wired USB configuration interface
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1892", TAG+="uaccess"
