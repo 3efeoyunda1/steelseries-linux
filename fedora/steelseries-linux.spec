@@ -1,5 +1,5 @@
 Name:           steelseries-linux
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Linux configuration CLI for supported SteelSeries devices
 
@@ -54,5 +54,8 @@ fi
 %{_udevrulesdir}/70-steelseries-linux.rules
 
 %changelog
+* Fri Oct 02 2026 3efeoyunda1 <3efeoyunda1@users.noreply.github.com> - 0.3.0-1
+- Release 0.3.0
+
 * Fri Sep 25 2026 3efeoyunda1 <3efeoyunda1@users.noreply.github.com> - 0.2.0-1
-- Initial RPM package for SteelSeries Linux.
+- Initial Fedora package for SteelSeries Linux.

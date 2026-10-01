@@ -24,8 +24,6 @@
 - `dpi use` now selects a one-based stage ID instead of searching by DPI value
 - Aerox 3 Wireless Gen 2 DPI validation now uses the device-specific 50–26000 DPI range in 50-DPI steps
 
----
-
 ## 0.2.0
 
 ### Added
