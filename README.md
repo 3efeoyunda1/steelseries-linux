@@ -18,10 +18,15 @@ Currently supported:
 * Read DPI stages
 * Configure 1–5 DPI stages
 * Select active DPI stage
+* Read and configure per-stage lift-off distance
 * Read polling rates
 * Configure 2.4 GHz wireless polling rate
 * Configure wired polling rate
 * Read battery and charging status
+* Read and configure power-management settings
+* Read and configure Wireless Stability Enhancement
+* Read and configure Bluetooth Smoothing
+* Read and configure Scroll Jump Protection
 * Automatic wired USB / linked 2.4 GHz receiver selection
 * Physical-device deduplication across USB endpoints
 * Persistent device configuration
@@ -143,6 +148,31 @@ when multiple supported physical mice are connected. The ID remains the same whe
 between wired USB and its linked 2.4 GHz receiver because both endpoints are grouped by device
 identity.
 
+### JSON output
+
+Human-readable output remains the default. Pass the global `--json` flag for the stable,
+machine-readable interface intended for scripts, frontends, and the future GUI:
+
+```bash
+steelseriesctl --json devices
+steelseriesctl --json dpi get
+steelseriesctl --json battery get
+steelseriesctl --json power get
+steelseriesctl --json wireless-stability get
+steelseriesctl --json bluetooth-smoothing get
+steelseriesctl --json scroll-jump get
+```
+
+For example:
+
+```json
+{"schema_version":1,"ok":true,"command":"scroll-jump.get","data":{"enabled":true,"delay_ms":500}}
+```
+
+The JSON schema version is currently `1`. Field names and command identifiers are stable API
+surface. Successful commands write one JSON document to stdout; runtime failures write one JSON
+error document to stderr and return a non-zero exit status.
+
 ### DPI
 
 Show DPI commands:
@@ -161,14 +191,21 @@ Set DPI stages:
 
 ```bash
 steelseriesctl dpi set 400 800 1600
+steelseriesctl dpi set 400 800x1600 3200
 # Up to 5 stages are supported.
 ```
+
+A single value applies to both X and Y axes. Use the canonical `XxY` form (for example,
+`800x1600`) to configure the axes independently; uppercase `X` is also accepted as input.
+Aerox 3 Wireless Gen 2 values must be between 50 and 26000 DPI in steps of 50 on each axis.
 
 Select an existing DPI stage:
 
 ```bash
-steelseriesctl dpi use 800
+steelseriesctl dpi use 2
 ```
+
+`dpi use` selects by the one-based stage ID shown by `dpi get`, not by DPI value.
 
 Example:
 
@@ -177,8 +214,36 @@ DPI Stages:
   1: 400 DPI
 > 2: 800 DPI
   3: 1600 DPI
+```
 
-Active: 800 DPI
+### Lift-off Distance
+
+Show lift-off distance commands:
+
+```bash
+steelseriesctl lod
+```
+
+Read lift-off distance for every configured DPI stage:
+
+```bash
+steelseriesctl lod get
+```
+
+Set one stage to Low (1 mm) or High (2 mm):
+
+```bash
+steelseriesctl lod set low 1
+steelseriesctl lod set high 4
+```
+
+Example:
+
+```text
+Lift-off Distance:
+> 1: Low (1 mm)
+  2: Low (1 mm)
+  3: High (2 mm)
 ```
 
 ### Polling Rate
@@ -228,13 +293,72 @@ Battery: 20%
 Charging: No
 ```
 
+### Power Management
+
+Read the complete power configuration:
+
+```bash
+steelseriesctl power get
+```
+
+Change individual settings while preserving the other power fields:
+
+```bash
+steelseriesctl power low-power set on
+steelseriesctl power low-power set off
+steelseriesctl power low-power polling 125
+steelseriesctl power auto-low-power set on
+steelseriesctl power auto-low-power threshold 10
+steelseriesctl power sleep set 30
+```
+
+Low Power polling accepts 125, 250, or 500 Hz. Auto Low Power thresholds accept 5–25%.
+The sleep timer accepts whole minutes from 1 through 71582; 71582 is the largest whole-minute
+value encodable by the verified `u32` millisecond field, while hardware testing currently covers
+values through 1440 minutes.
+
+### Wireless Stability Enhancement
+
+```bash
+steelseriesctl wireless-stability
+steelseriesctl wireless-stability get
+steelseriesctl wireless-stability set on
+steelseriesctl wireless-stability set off
+```
+
+### Bluetooth Smoothing
+
+```bash
+steelseriesctl bluetooth-smoothing
+steelseriesctl bluetooth-smoothing get
+steelseriesctl bluetooth-smoothing set on
+steelseriesctl bluetooth-smoothing set off
+```
+
+These settings are stored independently from normal polling configuration. Changing either
+setting preserves the other setting and does not change a wireless or wired polling rate.
+
+### Scroll Jump Protection
+
+```bash
+steelseriesctl scroll-jump
+steelseriesctl scroll-jump get
+steelseriesctl scroll-jump set on
+steelseriesctl scroll-jump delay 500
+steelseriesctl scroll-jump set off
+```
+
+The delay is configured in milliseconds. The currently supported GG-compatible range is
+100–1500 ms in 100 ms steps. Changing the delay preserves the enabled state, and changing the
+enabled state preserves the delay.
+
 ---
 
 ## Supported Devices
 
-| Device                 | USB endpoints                         | Support                 |
-| ---------------------- | ------------------------------------- | ----------------------- |
-| Aerox 3 Wireless Gen 2 | `1038:1890` receiver, `1038:1892` USB | DPI + Polling + Battery |
+| Device                 | USB endpoints                         | Support                                               |
+| ---------------------- | ------------------------------------- | ----------------------------------------------------- |
+| Aerox 3 Wireless Gen 2 | `1038:1890` receiver, `1038:1892` USB | DPI + LOD + Polling + Battery + Power + Wireless Features + Scroll Jump |
 
 Aerox 3, Aerox 3 Wireless and Aerox 3 Wireless Gen 2 are treated as separate devices. Protocol compatibility is not assumed between models.
 

@@ -8,8 +8,11 @@ use hidapi::{HidApi, HidDevice};
 use thiserror::Error;
 
 use crate::device::{
-    BatteryStatus, ConnectionType, DeviceIdentity, DpiConfig, DpiStage, PhysicalDevice,
-    PollingConfig, PollingRate,
+    AutoLowPowerThreshold, BatteryStatus, ConnectionType, DeviceCapabilities, DeviceIdentity,
+    DpiCapabilities, DpiConfig, DpiStage, LiftOffDistance, LowPowerPollingRate, PhysicalDevice,
+    PollingCapabilities, PollingConfig, PollingRate, PowerCapabilities, PowerConfig,
+    ScrollJumpCapabilities, ScrollJumpConfig, SleepTimer, WirelessFeatureCapabilities,
+    WirelessFeatures,
 };
 
 pub const VENDOR_ID: u16 = 0x1038;
@@ -22,6 +25,12 @@ pub const CMD_SET_DPI: u8 = 0x6d;
 pub const CMD_GET_DPI: u8 = 0xad;
 pub const CMD_SET_POLLING: u8 = 0x6b;
 pub const CMD_GET_POLLING: u8 = 0xab;
+pub const CMD_SET_POWER: u8 = 0x68;
+pub const CMD_GET_POWER: u8 = 0xa8;
+pub const CMD_SET_WIRELESS_FEATURES: u8 = 0x55;
+pub const CMD_GET_WIRELESS_FEATURES: u8 = 0x95;
+pub const CMD_SET_SCROLL_JUMP: u8 = 0x56;
+pub const CMD_GET_SCROLL_JUMP: u8 = 0x96;
 pub const CMD_GET_BATTERY: u8 = 0x92;
 pub const CMD_GET_DEVICE_IDENTITY: u8 = 0xf0;
 pub const CMD_GET_RECEIVER_LINK: u8 = 0xbc;
@@ -29,7 +38,14 @@ pub const CMD_GET_RECEIVER_LINK: u8 = 0xbc;
 const REPORT_SIZE: usize = 64;
 const WRITE_SIZE: usize = REPORT_SIZE + 1;
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
-const MAX_DPI_STAGES: usize = 5;
+const IDENTITY_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(300);
+const IDENTITY_MAX_ATTEMPTS: usize = 5;
+const POWER_RESERVED_OFFSET: usize = 9;
+const POWER_RESERVED_SIZE: usize = REPORT_SIZE - POWER_RESERVED_OFFSET;
+const WIRELESS_FEATURES_RESERVED_OFFSET: usize = 3;
+const WIRELESS_FEATURES_RESERVED_SIZE: usize = REPORT_SIZE - WIRELESS_FEATURES_RESERVED_OFFSET;
+const SCROLL_JUMP_RESERVED_OFFSET: usize = 4;
+const SCROLL_JUMP_RESERVED_SIZE: usize = REPORT_SIZE - SCROLL_JUMP_RESERVED_OFFSET;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndpointKind {
@@ -142,16 +158,46 @@ pub enum Error {
     UnexpectedCommand { expected: u8, actual: u8 },
     #[error("DPI configuration must contain between 1 and 5 stages (received {0})")]
     InvalidDpiStageCount(usize),
+    #[error("{axis}-axis DPI {value} is invalid; DPI must be between 50 and 26000 in steps of 50")]
+    InvalidDpiValue { axis: &'static str, value: u16 },
     #[error("active DPI stage index {active} is outside the {stage_count} configured stages")]
     InvalidDpiActiveIndex { active: usize, stage_count: usize },
-    #[error("{0} DPI is not configured as a DPI stage")]
-    DpiNotConfigured(u16),
+    #[error("stage ID {0} is outside the supported range 1..=5")]
+    InvalidStageId(usize),
+    #[error(
+        "stage ID {stage_id} is not configured; current configuration contains {stage_count} stages"
+    )]
+    StageNotConfigured { stage_id: usize, stage_count: usize },
+    #[error("unknown lift-off-distance protocol value 0x{0:02x}; expected 0x00 or 0x01")]
+    UnknownLiftOffDistance(u8),
     #[error("unknown polling-rate protocol code 0x{0:02x}")]
     UnknownPollingCode(u8),
     #[error("unsupported polling rate {0} Hz; expected 125, 250, 500, 1000, 2000, or 4000 Hz")]
     UnsupportedPollingRate(u16),
     #[error("wired polling rate supports a maximum of 1000 Hz")]
     WiredPollingTooHigh,
+    #[error("unknown low-power polling protocol code 0x{0:02x}")]
+    UnknownLowPowerPollingCode(u8),
+    #[error("unsupported low-power polling rate {0} Hz; expected 125, 250, or 500 Hz")]
+    UnsupportedLowPowerPollingRate(u16),
+    #[error("invalid {field} state 0x{value:02x}; expected 0x00 or 0x01")]
+    InvalidPowerBoolean { field: &'static str, value: u8 },
+    #[error("Auto Low Power threshold must be between 5% and 25% (received {0}%)")]
+    InvalidAutoLowPowerThreshold(u8),
+    #[error("sleep timer must be at least 1 minute; zero/off encoding is not supported")]
+    SleepTimerZero,
+    #[error("sleep timer is too large. Maximum encodable value is 71582 minutes")]
+    SleepTimerTooLarge,
+    #[error("invalid sleep timer value {0} ms; zero/off encoding is not supported")]
+    InvalidSleepTimerMilliseconds(u32),
+    #[error("invalid {field} state 0x{value:02x}; expected 0x00 or 0x01")]
+    InvalidWirelessFeatureBoolean { field: &'static str, value: u8 },
+    #[error("invalid Scroll Jump Protection state 0x{0:02x}; expected 0x00 or 0x01")]
+    InvalidScrollJumpEnabled(u8),
+    #[error(
+        "unsupported Scroll Jump Protection delay {0} ms; expected 100-1500 ms in 100 ms steps"
+    )]
+    InvalidScrollJumpDelay(u16),
     #[error("malformed battery response: invalid charging state 0x{0:02x}; expected 0x00 or 0x01")]
     InvalidBatteryChargingState(u8),
     #[error(
@@ -213,11 +259,114 @@ impl From<PollingRate> for u8 {
     }
 }
 
+impl TryFrom<u16> for LowPowerPollingRate {
+    type Error = Error;
+
+    fn try_from(hz: u16) -> Result<Self, Self::Error> {
+        match hz {
+            125 => Ok(Self::Hz125),
+            250 => Ok(Self::Hz250),
+            500 => Ok(Self::Hz500),
+            _ => Err(Error::UnsupportedLowPowerPollingRate(hz)),
+        }
+    }
+}
+
+impl TryFrom<u8> for LowPowerPollingRate {
+    type Error = Error;
+
+    fn try_from(code: u8) -> Result<Self, Self::Error> {
+        match code {
+            0x05 => Ok(Self::Hz125),
+            0x04 => Ok(Self::Hz250),
+            0x03 => Ok(Self::Hz500),
+            _ => Err(Error::UnknownLowPowerPollingCode(code)),
+        }
+    }
+}
+
+impl From<LowPowerPollingRate> for u8 {
+    fn from(rate: LowPowerPollingRate) -> Self {
+        match rate {
+            LowPowerPollingRate::Hz125 => 0x05,
+            LowPowerPollingRate::Hz250 => 0x04,
+            LowPowerPollingRate::Hz500 => 0x03,
+        }
+    }
+}
+
+impl TryFrom<u8> for LiftOffDistance {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(Self::Low),
+            0x01 => Ok(Self::High),
+            _ => Err(Error::UnknownLiftOffDistance(value)),
+        }
+    }
+}
+
+impl From<LiftOffDistance> for u8 {
+    fn from(value: LiftOffDistance) -> Self {
+        match value {
+            LiftOffDistance::Low => 0x00,
+            LiftOffDistance::High => 0x01,
+        }
+    }
+}
+
 pub struct Aerox3WirelessGen2 {
     device: HidDevice,
 }
 
 impl Aerox3WirelessGen2 {
+    pub const CAPABILITIES: DeviceCapabilities = DeviceCapabilities {
+        dpi: DpiCapabilities {
+            min: 50,
+            max: 26_000,
+            step: 50,
+            max_stages: 5,
+        },
+        polling: PollingCapabilities {
+            wireless: &[
+                PollingRate::Hz125,
+                PollingRate::Hz250,
+                PollingRate::Hz500,
+                PollingRate::Hz1000,
+                PollingRate::Hz2000,
+                PollingRate::Hz4000,
+            ],
+            wired: &[
+                PollingRate::Hz125,
+                PollingRate::Hz250,
+                PollingRate::Hz500,
+                PollingRate::Hz1000,
+            ],
+        },
+        power: PowerCapabilities {
+            low_power_polling: &[
+                LowPowerPollingRate::Hz125,
+                LowPowerPollingRate::Hz250,
+                LowPowerPollingRate::Hz500,
+            ],
+            auto_low_power_threshold_min: 5,
+            auto_low_power_threshold_max: 25,
+            sleep_timer_min_minutes: 1,
+            sleep_timer_max_minutes: 71_582,
+        },
+        wireless_features: WirelessFeatureCapabilities {
+            wireless_stability: true,
+            bluetooth_smoothing: true,
+        },
+        scroll_jump: ScrollJumpCapabilities {
+            supported: true,
+            delay_min_ms: 100,
+            delay_max_ms: 1_500,
+            delay_step_ms: 100,
+        },
+    };
+
     pub fn open() -> Result<Self, Error> {
         Self::open_selected(None)
     }
@@ -335,9 +484,9 @@ impl Aerox3WirelessGen2 {
     }
 
     fn get_device_identity(&self) -> Result<DeviceIdentity, Error> {
-        let response = self.send_command_and_expect(
-            command_report(CMD_GET_DEVICE_IDENTITY),
-            CMD_GET_DEVICE_IDENTITY,
+        let response = send_identity_query_with_retry(
+            |report| self.write_report(report),
+            |remaining| self.read_report_timeout(CMD_GET_DEVICE_IDENTITY, remaining),
         )?;
         parse_device_identity_response(&response)
     }
@@ -361,10 +510,22 @@ impl Aerox3WirelessGen2 {
         Ok(())
     }
 
-    /// Selects an existing scalar DPI stage. Call [`Self::commit`] to persist it.
-    pub fn set_active_dpi(&self, dpi: u16) -> Result<(), Error> {
+    /// Selects an existing stage by its one-based ID. Call [`Self::commit`] to persist it.
+    pub fn set_active_dpi_stage(&self, stage_id: usize) -> Result<(), Error> {
         let current = self.get_dpi_config()?;
-        let updated = config_with_active_dpi(&current, dpi)?;
+        let updated = config_with_active_stage(&current, stage_id)?;
+        self.set_dpi_config(&updated)
+    }
+
+    /// Changes one stage's LOD while preserving the complete sensor configuration.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_lift_off_distance(
+        &self,
+        stage_id: usize,
+        lod: LiftOffDistance,
+    ) -> Result<(), Error> {
+        let current = self.get_dpi_config()?;
+        let updated = config_with_lift_off_distance(&current, stage_id, lod)?;
         self.set_dpi_config(&updated)
     }
 
@@ -378,6 +539,115 @@ impl Aerox3WirelessGen2 {
         let response =
             self.send_command_and_expect(command_report(CMD_GET_BATTERY), CMD_GET_BATTERY)?;
         parse_battery_response(&response)
+    }
+
+    pub fn get_power_config(&self) -> Result<PowerConfig, Error> {
+        let response =
+            self.send_command_and_expect(command_report(CMD_GET_POWER), CMD_GET_POWER)?;
+        parse_power_response(&response)
+    }
+
+    /// Changes Low Power Mode while preserving all other power fields.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_low_power_enabled(&self, enabled: bool) -> Result<(), Error> {
+        let current = self.get_power_config()?;
+        self.set_power_config(&power_with_low_power_enabled(current, enabled))
+    }
+
+    /// Changes Low Power polling while preserving all other power fields.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_low_power_polling(&self, rate: LowPowerPollingRate) -> Result<(), Error> {
+        let current = self.get_power_config()?;
+        self.set_power_config(&power_with_low_power_polling(current, rate))
+    }
+
+    /// Changes Auto Low Power while preserving all other power fields.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_auto_low_power_enabled(&self, enabled: bool) -> Result<(), Error> {
+        let current = self.get_power_config()?;
+        self.set_power_config(&power_with_auto_low_power_enabled(current, enabled))
+    }
+
+    /// Changes the Auto Low Power threshold while preserving all other power fields.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_auto_low_power_threshold(
+        &self,
+        threshold: AutoLowPowerThreshold,
+    ) -> Result<(), Error> {
+        let current = self.get_power_config()?;
+        self.set_power_config(&power_with_auto_low_power_threshold(current, threshold))
+    }
+
+    /// Changes the sleep timer while preserving all other power fields.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_sleep_timer(&self, timer: SleepTimer) -> Result<(), Error> {
+        let current = self.get_power_config()?;
+        self.set_power_config(&power_with_sleep_timer(current, timer))
+    }
+
+    fn set_power_config(&self, config: &PowerConfig) -> Result<(), Error> {
+        self.send_command_and_expect(encode_power_config(config)?, CMD_SET_POWER)?;
+        Ok(())
+    }
+
+    pub fn get_wireless_features(&self) -> Result<WirelessFeatures, Error> {
+        let response = self.send_command_and_expect(
+            command_report(CMD_GET_WIRELESS_FEATURES),
+            CMD_GET_WIRELESS_FEATURES,
+        )?;
+        parse_wireless_features_response(&response)
+    }
+
+    /// Changes Wireless Stability Enhancement while preserving Bluetooth Smoothing and all
+    /// reserved bytes. Call [`Self::commit`] to persist it.
+    pub fn set_wireless_stability(&self, enabled: bool) -> Result<(), Error> {
+        let current = self.get_wireless_features()?;
+        let updated = wireless_features_with_stability(current, enabled);
+        self.set_wireless_features(&updated)
+    }
+
+    /// Changes Bluetooth Smoothing while preserving Wireless Stability Enhancement and all
+    /// reserved bytes. Call [`Self::commit`] to persist it.
+    pub fn set_bluetooth_smoothing(&self, enabled: bool) -> Result<(), Error> {
+        let current = self.get_wireless_features()?;
+        let updated = wireless_features_with_bluetooth_smoothing(current, enabled);
+        self.set_wireless_features(&updated)
+    }
+
+    fn set_wireless_features(&self, features: &WirelessFeatures) -> Result<(), Error> {
+        self.send_command_and_expect(
+            encode_wireless_features(features),
+            CMD_SET_WIRELESS_FEATURES,
+        )?;
+        Ok(())
+    }
+
+    pub fn get_scroll_jump_config(&self) -> Result<ScrollJumpConfig, Error> {
+        let response =
+            self.send_command_and_expect(command_report(CMD_GET_SCROLL_JUMP), CMD_GET_SCROLL_JUMP)?;
+        parse_scroll_jump_response(&response)
+    }
+
+    /// Changes Scroll Jump Protection while preserving its delay and all reserved bytes.
+    /// Call [`Self::commit`] to persist it.
+    pub fn set_scroll_jump_enabled(&self, enabled: bool) -> Result<(), Error> {
+        let current = self.get_scroll_jump_config()?;
+        let updated = scroll_jump_with_enabled(current, enabled);
+        self.set_scroll_jump_config(&updated)
+    }
+
+    /// Changes the Scroll Jump Protection delay while preserving its enabled state and all
+    /// reserved bytes. Call [`Self::commit`] to persist it.
+    pub fn set_scroll_jump_delay(&self, delay_ms: u16) -> Result<(), Error> {
+        validate_scroll_jump_delay(delay_ms)?;
+        let current = self.get_scroll_jump_config()?;
+        let updated = scroll_jump_with_delay(current, delay_ms)?;
+        self.set_scroll_jump_config(&updated)
+    }
+
+    fn set_scroll_jump_config(&self, config: &ScrollJumpConfig) -> Result<(), Error> {
+        self.send_command_and_expect(encode_scroll_jump_config(config), CMD_SET_SCROLL_JUMP)?;
+        Ok(())
     }
 
     /// Changes wireless polling while preserving wired polling. Call [`Self::commit`] to persist it.
@@ -580,24 +850,41 @@ fn group_identified_endpoints<T>(
 fn wait_for_expected_response<F>(
     expected_command: u8,
     timeout: Duration,
+    read_report: F,
+) -> Result<[u8; REPORT_SIZE], Error>
+where
+    F: FnMut(Duration) -> Result<Option<[u8; REPORT_SIZE]>, Error>,
+{
+    let mut observed_commands = Vec::new();
+    wait_for_expected_response_with_observed(
+        expected_command,
+        timeout,
+        &mut observed_commands,
+        read_report,
+    )
+}
+
+fn wait_for_expected_response_with_observed<F>(
+    expected_command: u8,
+    timeout: Duration,
+    observed_commands: &mut Vec<u8>,
     mut read_report: F,
 ) -> Result<[u8; REPORT_SIZE], Error>
 where
     F: FnMut(Duration) -> Result<Option<[u8; REPORT_SIZE]>, Error>,
 {
     let deadline = Instant::now() + timeout;
-    let mut observed_commands = Vec::new();
 
     loop {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Err(response_timeout_error(expected_command, &observed_commands));
+            return Err(response_timeout_error(expected_command, observed_commands));
         };
         if remaining.is_zero() {
-            return Err(response_timeout_error(expected_command, &observed_commands));
+            return Err(response_timeout_error(expected_command, observed_commands));
         }
 
         let Some(report) = read_report(remaining)? else {
-            return Err(response_timeout_error(expected_command, &observed_commands));
+            return Err(response_timeout_error(expected_command, observed_commands));
         };
 
         let command = report[0];
@@ -608,6 +895,57 @@ where
             observed_commands.push(command);
         }
     }
+}
+
+fn send_identity_query_with_retry<W, R>(
+    mut write_report: W,
+    mut read_report: R,
+) -> Result<[u8; REPORT_SIZE], Error>
+where
+    W: FnMut(&[u8; REPORT_SIZE]) -> Result<(), Error>,
+    R: FnMut(Duration) -> Result<Option<[u8; REPORT_SIZE]>, Error>,
+{
+    let report = command_report(CMD_GET_DEVICE_IDENTITY);
+    let overall_deadline = Instant::now() + RESPONSE_TIMEOUT;
+    let mut observed_commands = Vec::new();
+
+    for _ in 0..IDENTITY_MAX_ATTEMPTS {
+        let Some(overall_remaining) = overall_deadline.checked_duration_since(Instant::now())
+        else {
+            break;
+        };
+        if overall_remaining.is_zero() {
+            break;
+        }
+
+        write_report(&report)?;
+        let Some(overall_remaining) = overall_deadline.checked_duration_since(Instant::now())
+        else {
+            break;
+        };
+        if overall_remaining.is_zero() {
+            break;
+        }
+        let attempt_timeout = IDENTITY_ATTEMPT_TIMEOUT.min(overall_remaining);
+        match wait_for_expected_response_with_observed(
+            CMD_GET_DEVICE_IDENTITY,
+            attempt_timeout,
+            &mut observed_commands,
+            &mut read_report,
+        ) {
+            Ok(response) => return Ok(response),
+            Err(Error::ReadTimeout {
+                expected: CMD_GET_DEVICE_IDENTITY,
+                ..
+            }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(response_timeout_error(
+        CMD_GET_DEVICE_IDENTITY,
+        &observed_commands,
+    ))
 }
 
 fn response_timeout_error(expected: u8, observed_commands: &[u8]) -> Error {
@@ -631,7 +969,7 @@ fn command_report(command: u8) -> [u8; REPORT_SIZE] {
 }
 
 fn validate_dpi_config(config: &DpiConfig) -> Result<(), Error> {
-    if !(1..=MAX_DPI_STAGES).contains(&config.stages.len()) {
+    if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&config.stages.len()) {
         return Err(Error::InvalidDpiStageCount(config.stages.len()));
     }
     if config.active >= config.stages.len() {
@@ -640,13 +978,40 @@ fn validate_dpi_config(config: &DpiConfig) -> Result<(), Error> {
             stage_count: config.stages.len(),
         });
     }
+    for stage in &config.stages {
+        validate_dpi_value("X", stage.x)?;
+        validate_dpi_value("Y", stage.y)?;
+    }
+    Ok(())
+}
+
+fn validate_dpi_value(axis: &'static str, value: u16) -> Result<(), Error> {
+    let capabilities = Aerox3WirelessGen2::CAPABILITIES.dpi;
+    if value < capabilities.min
+        || value > capabilities.max
+        || !value.is_multiple_of(capabilities.step)
+    {
+        return Err(Error::InvalidDpiValue { axis, value });
+    }
+    Ok(())
+}
+
+/// Validates stage count and both axes against this model's DPI capabilities.
+pub fn validate_dpi_values(dpis: &[(u16, u16)]) -> Result<(), Error> {
+    if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&dpis.len()) {
+        return Err(Error::InvalidDpiStageCount(dpis.len()));
+    }
+    for &(x, y) in dpis {
+        validate_dpi_value("X", x)?;
+        validate_dpi_value("Y", y)?;
+    }
     Ok(())
 }
 
 fn parse_dpi_response(response: &[u8]) -> Result<DpiConfig, Error> {
     ensure_response_header(response, CMD_GET_DPI, 3)?;
     let stage_count = usize::from(response[1]);
-    if !(1..=MAX_DPI_STAGES).contains(&stage_count) {
+    if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&stage_count) {
         return Err(Error::InvalidDpiStageCount(stage_count));
     }
 
@@ -665,6 +1030,7 @@ fn parse_dpi_response(response: &[u8]) -> Result<DpiConfig, Error> {
         stages.push(DpiStage {
             x: read_u16_le(response, offset),
             y: read_u16_le(response, offset + 2),
+            lod: LiftOffDistance::try_from(response[offset + 4])?,
         });
     }
     let config = DpiConfig { stages, active };
@@ -681,43 +1047,86 @@ fn encode_dpi_config(config: &DpiConfig) -> Result<[u8; REPORT_SIZE], Error> {
         let offset = 3 + index * 5;
         write_u16_le(&mut report, offset, stage.x);
         write_u16_le(&mut report, offset + 2, stage.y);
+        report[offset + 4] = u8::from(stage.lod);
     }
     Ok(report)
 }
 
-/// Builds a scalar-stage configuration and preserves the active scalar DPI when possible.
-pub fn config_from_scalar_dpis(current: &DpiConfig, dpis: &[u16]) -> Result<DpiConfig, Error> {
-    if !(1..=MAX_DPI_STAGES).contains(&dpis.len()) {
-        return Err(Error::InvalidDpiStageCount(dpis.len()));
-    }
+/// Builds a DPI-stage configuration and preserves the active scalar DPI when possible.
+pub fn config_from_dpi_values(
+    current: &DpiConfig,
+    dpis: &[(u16, u16)],
+) -> Result<DpiConfig, Error> {
+    validate_dpi_values(dpis)?;
     validate_dpi_config(current)?;
 
     let active_value = current.stages[current.active];
     let active = if active_value.x == active_value.y {
         dpis.iter()
-            .position(|dpi| *dpi == active_value.x)
+            .position(|(x, y)| *x == active_value.x && *y == active_value.y)
             .unwrap_or(0)
     } else {
         0
     };
     Ok(DpiConfig {
-        stages: dpis.iter().copied().map(DpiStage::scalar).collect(),
+        stages: dpis
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| DpiStage {
+                x,
+                y,
+                lod: current
+                    .stages
+                    .get(index)
+                    .map_or(LiftOffDistance::Low, |stage| stage.lod),
+            })
+            .collect(),
         active,
     })
 }
 
-/// Returns a copy with only the active index changed; stage values remain exact.
-pub fn config_with_active_dpi(current: &DpiConfig, dpi: u16) -> Result<DpiConfig, Error> {
+fn configured_stage_index(current: &DpiConfig, stage_id: usize) -> Result<usize, Error> {
     validate_dpi_config(current)?;
-    let active = current
-        .stages
-        .iter()
-        .position(|stage| stage.x == dpi && stage.y == dpi)
-        .ok_or(Error::DpiNotConfigured(dpi))?;
+    let index = stage_id_to_index(stage_id)?;
+    if index >= current.stages.len() {
+        return Err(Error::StageNotConfigured {
+            stage_id,
+            stage_count: current.stages.len(),
+        });
+    }
+    Ok(index)
+}
+
+pub fn validate_stage_id(stage_id: usize) -> Result<(), Error> {
+    stage_id_to_index(stage_id).map(|_| ())
+}
+
+fn stage_id_to_index(stage_id: usize) -> Result<usize, Error> {
+    if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&stage_id) {
+        return Err(Error::InvalidStageId(stage_id));
+    }
+    Ok(stage_id - 1)
+}
+
+/// Returns a copy with only the active index changed; stage values remain exact.
+pub fn config_with_active_stage(current: &DpiConfig, stage_id: usize) -> Result<DpiConfig, Error> {
+    let active = configured_stage_index(current, stage_id)?;
     Ok(DpiConfig {
         stages: current.stages.clone(),
         active,
     })
+}
+
+/// Returns a copy with only one stage's lift-off distance changed.
+pub fn config_with_lift_off_distance(
+    current: &DpiConfig,
+    stage_id: usize,
+    lod: LiftOffDistance,
+) -> Result<DpiConfig, Error> {
+    let index = configured_stage_index(current, stage_id)?;
+    let mut updated = current.clone();
+    updated.stages[index].lod = lod;
+    Ok(updated)
 }
 
 fn parse_polling_response(response: &[u8]) -> Result<PollingConfig, Error> {
@@ -743,6 +1152,214 @@ fn parse_battery_response(response: &[u8]) -> Result<BatteryStatus, Error> {
         percent @ 0..=100 => Ok(BatteryStatus::Available { percent, charging }),
         value => Err(Error::InvalidBatteryPercentage(value)),
     }
+}
+
+fn parse_power_response(response: &[u8]) -> Result<PowerConfig, Error> {
+    ensure_response_header(response, CMD_GET_POWER, REPORT_SIZE)?;
+    let threshold = auto_low_power_threshold(response[8])?;
+    let sleep_milliseconds = read_u32_le(response, 3);
+    if sleep_milliseconds == 0 {
+        return Err(Error::InvalidSleepTimerMilliseconds(sleep_milliseconds));
+    }
+    let mut reserved = [0_u8; POWER_RESERVED_SIZE];
+    reserved.copy_from_slice(&response[POWER_RESERVED_OFFSET..REPORT_SIZE]);
+    Ok(PowerConfig {
+        low_power_enabled: parse_power_boolean("Low Power Mode", response[1])?,
+        low_power_polling: LowPowerPollingRate::try_from(response[2])?,
+        sleep_timer: SleepTimer::from_milliseconds(sleep_milliseconds),
+        auto_low_power_enabled: parse_power_boolean("Auto Low Power", response[7])?,
+        auto_low_power_threshold: threshold,
+        reserved,
+    })
+}
+
+fn parse_power_boolean(field: &'static str, value: u8) -> Result<bool, Error> {
+    match value {
+        0x00 => Ok(false),
+        0x01 => Ok(true),
+        value => Err(Error::InvalidPowerBoolean { field, value }),
+    }
+}
+
+fn encode_power_config(config: &PowerConfig) -> Result<[u8; REPORT_SIZE], Error> {
+    validate_auto_low_power_threshold(config.auto_low_power_threshold.percent())?;
+    if config.sleep_timer.milliseconds() == 0 {
+        return Err(Error::InvalidSleepTimerMilliseconds(0));
+    }
+    let mut report = command_report(CMD_SET_POWER);
+    report[1] = u8::from(config.low_power_enabled);
+    report[2] = config.low_power_polling.into();
+    write_u32_le(&mut report, 3, config.sleep_timer.milliseconds());
+    report[7] = u8::from(config.auto_low_power_enabled);
+    report[8] = config.auto_low_power_threshold.percent();
+    report[POWER_RESERVED_OFFSET..].copy_from_slice(&config.reserved);
+    Ok(report)
+}
+
+fn parse_wireless_features_response(response: &[u8]) -> Result<WirelessFeatures, Error> {
+    ensure_response_header(response, CMD_GET_WIRELESS_FEATURES, REPORT_SIZE)?;
+    let mut reserved = [0_u8; WIRELESS_FEATURES_RESERVED_SIZE];
+    reserved.copy_from_slice(&response[WIRELESS_FEATURES_RESERVED_OFFSET..REPORT_SIZE]);
+    Ok(WirelessFeatures {
+        wireless_stability_enabled: parse_wireless_feature_boolean(
+            "Wireless Stability Enhancement",
+            response[1],
+        )?,
+        bluetooth_smoothing_enabled: parse_wireless_feature_boolean(
+            "Bluetooth Smoothing",
+            response[2],
+        )?,
+        reserved,
+    })
+}
+
+fn parse_wireless_feature_boolean(field: &'static str, value: u8) -> Result<bool, Error> {
+    match value {
+        0x00 => Ok(false),
+        0x01 => Ok(true),
+        value => Err(Error::InvalidWirelessFeatureBoolean { field, value }),
+    }
+}
+
+fn encode_wireless_features(features: &WirelessFeatures) -> [u8; REPORT_SIZE] {
+    let mut report = command_report(CMD_SET_WIRELESS_FEATURES);
+    report[1] = u8::from(features.wireless_stability_enabled);
+    report[2] = u8::from(features.bluetooth_smoothing_enabled);
+    report[WIRELESS_FEATURES_RESERVED_OFFSET..].copy_from_slice(&features.reserved);
+    report
+}
+
+#[must_use]
+pub fn wireless_features_with_stability(
+    mut current: WirelessFeatures,
+    enabled: bool,
+) -> WirelessFeatures {
+    current.wireless_stability_enabled = enabled;
+    current
+}
+
+#[must_use]
+pub fn wireless_features_with_bluetooth_smoothing(
+    mut current: WirelessFeatures,
+    enabled: bool,
+) -> WirelessFeatures {
+    current.bluetooth_smoothing_enabled = enabled;
+    current
+}
+
+fn parse_scroll_jump_response(response: &[u8]) -> Result<ScrollJumpConfig, Error> {
+    ensure_response_header(response, CMD_GET_SCROLL_JUMP, REPORT_SIZE)?;
+    let enabled = match response[1] {
+        0x00 => false,
+        0x01 => true,
+        value => return Err(Error::InvalidScrollJumpEnabled(value)),
+    };
+    let mut reserved = [0_u8; SCROLL_JUMP_RESERVED_SIZE];
+    reserved.copy_from_slice(&response[SCROLL_JUMP_RESERVED_OFFSET..REPORT_SIZE]);
+    Ok(ScrollJumpConfig {
+        enabled,
+        delay_ms: read_u16_le(response, 2),
+        reserved,
+    })
+}
+
+fn encode_scroll_jump_config(config: &ScrollJumpConfig) -> [u8; REPORT_SIZE] {
+    let mut report = command_report(CMD_SET_SCROLL_JUMP);
+    report[1] = u8::from(config.enabled);
+    write_u16_le(&mut report, 2, config.delay_ms);
+    report[SCROLL_JUMP_RESERVED_OFFSET..].copy_from_slice(&config.reserved);
+    report
+}
+
+#[must_use]
+pub fn scroll_jump_with_enabled(mut current: ScrollJumpConfig, enabled: bool) -> ScrollJumpConfig {
+    current.enabled = enabled;
+    current
+}
+
+pub fn scroll_jump_with_delay(
+    mut current: ScrollJumpConfig,
+    delay_ms: u16,
+) -> Result<ScrollJumpConfig, Error> {
+    validate_scroll_jump_delay(delay_ms)?;
+    current.delay_ms = delay_ms;
+    Ok(current)
+}
+
+pub fn validate_scroll_jump_delay(delay_ms: u16) -> Result<(), Error> {
+    let capabilities = Aerox3WirelessGen2::CAPABILITIES.scroll_jump;
+    if !(capabilities.delay_min_ms..=capabilities.delay_max_ms).contains(&delay_ms)
+        || !delay_ms.is_multiple_of(capabilities.delay_step_ms)
+    {
+        return Err(Error::InvalidScrollJumpDelay(delay_ms));
+    }
+    Ok(())
+}
+
+pub fn auto_low_power_threshold(percent: u8) -> Result<AutoLowPowerThreshold, Error> {
+    validate_auto_low_power_threshold(percent)?;
+    Ok(AutoLowPowerThreshold::new(percent))
+}
+
+fn validate_auto_low_power_threshold(percent: u8) -> Result<(), Error> {
+    let capabilities = Aerox3WirelessGen2::CAPABILITIES.power;
+    if !(capabilities.auto_low_power_threshold_min..=capabilities.auto_low_power_threshold_max)
+        .contains(&percent)
+    {
+        return Err(Error::InvalidAutoLowPowerThreshold(percent));
+    }
+    Ok(())
+}
+
+pub fn sleep_timer_from_minutes(minutes: u64) -> Result<SleepTimer, Error> {
+    let capabilities = Aerox3WirelessGen2::CAPABILITIES.power;
+    if minutes < capabilities.sleep_timer_min_minutes {
+        return Err(Error::SleepTimerZero);
+    }
+    if minutes > capabilities.sleep_timer_max_minutes {
+        return Err(Error::SleepTimerTooLarge);
+    }
+    let milliseconds = minutes
+        .checked_mul(60_000)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or(Error::SleepTimerTooLarge)?;
+    Ok(SleepTimer::from_milliseconds(milliseconds))
+}
+
+#[must_use]
+pub fn power_with_low_power_enabled(mut current: PowerConfig, enabled: bool) -> PowerConfig {
+    current.low_power_enabled = enabled;
+    current
+}
+
+#[must_use]
+pub fn power_with_low_power_polling(
+    mut current: PowerConfig,
+    rate: LowPowerPollingRate,
+) -> PowerConfig {
+    current.low_power_polling = rate;
+    current
+}
+
+#[must_use]
+pub fn power_with_auto_low_power_enabled(mut current: PowerConfig, enabled: bool) -> PowerConfig {
+    current.auto_low_power_enabled = enabled;
+    current
+}
+
+#[must_use]
+pub fn power_with_auto_low_power_threshold(
+    mut current: PowerConfig,
+    threshold: AutoLowPowerThreshold,
+) -> PowerConfig {
+    current.auto_low_power_threshold = threshold;
+    current
+}
+
+#[must_use]
+pub fn power_with_sleep_timer(mut current: PowerConfig, timer: SleepTimer) -> PowerConfig {
+    current.sleep_timer = timer;
+    current
 }
 
 fn parse_device_identity_response(response: &[u8]) -> Result<DeviceIdentity, Error> {
@@ -803,9 +1420,14 @@ pub fn polling_with_wired(
 
 /// Validates the Aerox 3 Wireless Gen 2's wired-mode polling limit.
 pub fn validate_wired_polling_rate(rate: PollingRate) -> Result<(), Error> {
-    match rate {
-        PollingRate::Hz2000 | PollingRate::Hz4000 => Err(Error::WiredPollingTooHigh),
-        _ => Ok(()),
+    if Aerox3WirelessGen2::CAPABILITIES
+        .polling
+        .wired
+        .contains(&rate)
+    {
+        Ok(())
+    } else {
+        Err(Error::WiredPollingTooHigh)
     }
 }
 
@@ -830,8 +1452,21 @@ fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
 fn write_u16_le(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
 #[cfg(test)]
@@ -857,6 +1492,64 @@ mod tests {
             stages: values.iter().copied().map(DpiStage::scalar).collect(),
             active,
         }
+    }
+
+    fn power_config() -> PowerConfig {
+        PowerConfig {
+            low_power_enabled: false,
+            low_power_polling: LowPowerPollingRate::Hz125,
+            sleep_timer: sleep_timer_from_minutes(5).unwrap(),
+            auto_low_power_enabled: true,
+            auto_low_power_threshold: auto_low_power_threshold(10).unwrap(),
+            reserved: [0xa5; POWER_RESERVED_SIZE],
+        }
+    }
+
+    fn power_response(minutes: u64) -> [u8; REPORT_SIZE] {
+        let mut response = protocol_report(CMD_GET_POWER);
+        response[1] = 0x00;
+        response[2] = 0x05;
+        write_u32_le(
+            &mut response,
+            3,
+            sleep_timer_from_minutes(minutes).unwrap().milliseconds(),
+        );
+        response[7] = 0x01;
+        response[8] = 10;
+        response[POWER_RESERVED_OFFSET..].fill(0xa5);
+        response
+    }
+
+    fn wireless_features_response(stability: bool, smoothing: bool) -> [u8; REPORT_SIZE] {
+        let mut response = protocol_report(CMD_GET_WIRELESS_FEATURES);
+        response[1] = u8::from(stability);
+        response[2] = u8::from(smoothing);
+        for (index, byte) in response[WIRELESS_FEATURES_RESERVED_OFFSET..]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = u8::try_from(index + 1).unwrap();
+        }
+        response
+    }
+
+    fn scroll_jump_response(enabled: bool, delay_ms: u16) -> [u8; REPORT_SIZE] {
+        let mut response = protocol_report(CMD_GET_SCROLL_JUMP);
+        response[1] = u8::from(enabled);
+        write_u16_le(&mut response, 2, delay_ms);
+        for (index, byte) in response[SCROLL_JUMP_RESERVED_OFFSET..]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = u8::try_from(index + 1).unwrap();
+        }
+        response
+    }
+
+    fn identity_protocol_response(value: &str) -> [u8; REPORT_SIZE] {
+        let mut response = protocol_report(CMD_GET_DEVICE_IDENTITY);
+        response[1..1 + value.len()].copy_from_slice(value.as_bytes());
+        response
     }
 
     fn identity(value: &str) -> DeviceIdentity {
@@ -886,26 +1579,69 @@ mod tests {
     #[test]
     fn parses_dpi_response() {
         let mut response = [0_u8; REPORT_SIZE];
-        response[..18].copy_from_slice(&[
-            0xad, 3, 2, 0x90, 0x01, 0x90, 0x01, 0, 0x20, 0x03, 0x20, 0x03, 0, 0x40, 0x06, 0x40,
-            0x06, 0,
+        response[..28].copy_from_slice(&[
+            0xad, 5, 0, 0x78, 0x05, 0x78, 0x05, 0, 0xaa, 0x05, 0xaa, 0x05, 0, 0xdc, 0x05, 0xdc,
+            0x05, 0, 0x0e, 0x06, 0x0e, 0x06, 0, 0x40, 0x06, 0x40, 0x06, 1,
         ]);
+        let config = parse_dpi_response(&response).unwrap();
+        assert_eq!(config.active, 0);
+        assert_eq!(config.stages.len(), 5);
+        assert_eq!(config.stages[0], DpiStage::scalar(1400));
+        assert_eq!(config.stages[3], DpiStage::scalar(1550));
         assert_eq!(
-            parse_dpi_response(&response).unwrap(),
-            scalar_config(&[400, 800, 1600], 2)
+            config.stages[4],
+            DpiStage {
+                x: 1600,
+                y: 1600,
+                lod: LiftOffDistance::High,
+            }
         );
     }
 
     #[test]
     fn encodes_dpi_set_packet() {
-        let report = encode_dpi_config(&scalar_config(&[400, 800, 1600], 1)).unwrap();
+        let config = DpiConfig {
+            stages: vec![
+                DpiStage::scalar(400),
+                DpiStage {
+                    x: 800,
+                    y: 800,
+                    lod: LiftOffDistance::High,
+                },
+                DpiStage::scalar(1600),
+            ],
+            active: 1,
+        };
+        let report = encode_dpi_config(&config).unwrap();
         assert_eq!(
             &report[..18],
             &[
-                0x6d, 3, 1, 0x90, 1, 0x90, 1, 0, 0x20, 3, 0x20, 3, 0, 0x40, 6, 0x40, 6, 0
+                0x6d, 3, 1, 0x90, 1, 0x90, 1, 0, 0x20, 3, 0x20, 3, 1, 0x40, 6, 0x40, 6, 0
             ]
         );
         assert!(report[18..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn lift_off_distance_protocol_values_map_in_both_directions() {
+        assert_eq!(
+            LiftOffDistance::try_from(0x00).unwrap(),
+            LiftOffDistance::Low
+        );
+        assert_eq!(
+            LiftOffDistance::try_from(0x01).unwrap(),
+            LiftOffDistance::High
+        );
+        assert_eq!(u8::from(LiftOffDistance::Low), 0x00);
+        assert_eq!(u8::from(LiftOffDistance::High), 0x01);
+    }
+
+    #[test]
+    fn rejects_unknown_lift_off_distance_value() {
+        assert!(matches!(
+            LiftOffDistance::try_from(0x02),
+            Err(Error::UnknownLiftOffDistance(0x02))
+        ));
     }
 
     #[test]
@@ -924,6 +1660,391 @@ mod tests {
                 stage_count: 1
             }
         ));
+    }
+
+    #[test]
+    fn validates_aerox_3_wireless_gen2_dpi_capabilities() {
+        for value in [50, 400, 1450, 26_000] {
+            validate_dpi_values(&[(value, value)]).unwrap();
+        }
+
+        for value in [49, 51, 1451, 26_050] {
+            assert!(matches!(
+                validate_dpi_values(&[(value, 800)]),
+                Err(Error::InvalidDpiValue { axis: "X", value: invalid }) if invalid == value
+            ));
+        }
+    }
+
+    #[test]
+    fn validates_asymmetric_dpi_axes_independently() {
+        validate_dpi_values(&[(50, 26_000), (800, 1600)]).unwrap();
+        assert!(matches!(
+            validate_dpi_values(&[(49, 800)]),
+            Err(Error::InvalidDpiValue {
+                axis: "X",
+                value: 49
+            })
+        ));
+        assert!(matches!(
+            validate_dpi_values(&[(800, 26_050)]),
+            Err(Error::InvalidDpiValue {
+                axis: "Y",
+                value: 26_050
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_all_verified_wireless_feature_states() {
+        for (stability, smoothing) in [(false, false), (true, false), (false, true), (true, true)] {
+            let response = wireless_features_response(stability, smoothing);
+            let features = parse_wireless_features_response(&response).unwrap();
+            assert_eq!(features.wireless_stability_enabled, stability);
+            assert_eq!(features.bluetooth_smoothing_enabled, smoothing);
+            assert_eq!(
+                features.reserved.as_slice(),
+                &response[WIRELESS_FEATURES_RESERVED_OFFSET..]
+            );
+        }
+    }
+
+    #[test]
+    fn wireless_stability_updates_only_byte_one() {
+        for (initial, updated) in [(false, true), (true, false)] {
+            let response = wireless_features_response(initial, true);
+            let current = parse_wireless_features_response(&response).unwrap();
+            let report =
+                encode_wireless_features(&wireless_features_with_stability(current, updated));
+            let mut expected = response;
+            expected[0] = CMD_SET_WIRELESS_FEATURES;
+            expected[1] = u8::from(updated);
+            assert_eq!(report, expected);
+        }
+    }
+
+    #[test]
+    fn bluetooth_smoothing_updates_only_byte_two() {
+        for (initial, updated) in [(false, true), (true, false)] {
+            let response = wireless_features_response(true, initial);
+            let current = parse_wireless_features_response(&response).unwrap();
+            let report = encode_wireless_features(&wireless_features_with_bluetooth_smoothing(
+                current, updated,
+            ));
+            let mut expected = response;
+            expected[0] = CMD_SET_WIRELESS_FEATURES;
+            expected[2] = u8::from(updated);
+            assert_eq!(report, expected);
+        }
+    }
+
+    #[test]
+    fn wireless_features_get_skips_stale_reports() {
+        let expected = wireless_features_response(true, true);
+        let matched = match_report_sequence(
+            [
+                protocol_report(CMD_COMMIT),
+                protocol_report(CMD_SET_POWER),
+                expected,
+            ],
+            CMD_GET_WIRELESS_FEATURES,
+        )
+        .unwrap();
+        assert_eq!(matched, expected);
+    }
+
+    #[test]
+    fn wireless_feature_get_and_set_reports_use_only_their_own_commands() {
+        let get = command_report(CMD_GET_WIRELESS_FEATURES);
+        assert_eq!(get[0], 0x95);
+        assert!(get[1..].iter().all(|byte| *byte == 0));
+
+        let current =
+            parse_wireless_features_response(&wireless_features_response(false, false)).unwrap();
+        let set = encode_wireless_features(&wireless_features_with_stability(current, true));
+        assert_eq!(set[0], 0x55);
+        assert_ne!(set[0], CMD_COMMIT);
+    }
+
+    #[test]
+    fn rejects_invalid_wireless_feature_states() {
+        let mut response = wireless_features_response(false, false);
+        response[1] = 0x02;
+        assert!(matches!(
+            parse_wireless_features_response(&response),
+            Err(Error::InvalidWirelessFeatureBoolean {
+                field: "Wireless Stability Enhancement",
+                value: 0x02
+            })
+        ));
+
+        let mut response = wireless_features_response(false, false);
+        response[2] = 0x02;
+        assert!(matches!(
+            parse_wireless_features_response(&response),
+            Err(Error::InvalidWirelessFeatureBoolean {
+                field: "Bluetooth Smoothing",
+                value: 0x02
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_verified_scroll_jump_responses() {
+        for (enabled, delay_ms) in [(false, 500), (true, 100), (true, 1_500)] {
+            let response = scroll_jump_response(enabled, delay_ms);
+            let config = parse_scroll_jump_response(&response).unwrap();
+            assert_eq!(config.enabled, enabled);
+            assert_eq!(config.delay_ms, delay_ms);
+            assert_eq!(
+                config.reserved.as_slice(),
+                &response[SCROLL_JUMP_RESERVED_OFFSET..]
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_jump_enabled_updates_only_byte_one() {
+        for (initial, updated) in [(false, true), (true, false)] {
+            let response = scroll_jump_response(initial, 500);
+            let current = parse_scroll_jump_response(&response).unwrap();
+            let report = encode_scroll_jump_config(&scroll_jump_with_enabled(current, updated));
+            let mut expected = response;
+            expected[0] = CMD_SET_SCROLL_JUMP;
+            expected[1] = u8::from(updated);
+            assert_eq!(report, expected);
+        }
+    }
+
+    #[test]
+    fn scroll_jump_delay_updates_only_delay_bytes() {
+        for enabled in [false, true] {
+            let response = scroll_jump_response(enabled, 1_500);
+            let current = parse_scroll_jump_response(&response).unwrap();
+            let report = encode_scroll_jump_config(&scroll_jump_with_delay(current, 500).unwrap());
+            let mut expected = response;
+            expected[0] = CMD_SET_SCROLL_JUMP;
+            expected[2..4].copy_from_slice(&500_u16.to_le_bytes());
+            assert_eq!(report, expected);
+        }
+    }
+
+    #[test]
+    fn serializes_verified_scroll_jump_delays_as_little_endian() {
+        for (delay_ms, bytes) in [
+            (100, [0x64, 0x00]),
+            (500, [0xf4, 0x01]),
+            (1_500, [0xdc, 0x05]),
+        ] {
+            let current =
+                parse_scroll_jump_response(&scroll_jump_response(true, delay_ms)).unwrap();
+            let report = encode_scroll_jump_config(&current);
+            assert_eq!(&report[2..4], &bytes);
+        }
+    }
+
+    #[test]
+    fn validates_gg_compatible_scroll_jump_delays() {
+        for delay_ms in [100, 200, 500, 1_500] {
+            validate_scroll_jump_delay(delay_ms).unwrap();
+        }
+        for delay_ms in [99, 101, 250, 1_501] {
+            assert!(matches!(
+                validate_scroll_jump_delay(delay_ms),
+                Err(Error::InvalidScrollJumpDelay(value)) if value == delay_ms
+            ));
+        }
+    }
+
+    #[test]
+    fn scroll_jump_get_skips_stale_reports() {
+        let expected = scroll_jump_response(true, 500);
+        let matched = match_report_sequence(
+            [
+                protocol_report(CMD_COMMIT),
+                protocol_report(CMD_SET_WIRELESS_FEATURES),
+                expected,
+            ],
+            CMD_GET_SCROLL_JUMP,
+        )
+        .unwrap();
+        assert_eq!(matched, expected);
+    }
+
+    #[test]
+    fn scroll_jump_get_and_set_reports_use_only_their_own_commands() {
+        let get = command_report(CMD_GET_SCROLL_JUMP);
+        assert_eq!(get[0], 0x96);
+        assert!(get[1..].iter().all(|byte| *byte == 0));
+
+        let current = parse_scroll_jump_response(&scroll_jump_response(false, 500)).unwrap();
+        let set = encode_scroll_jump_config(&scroll_jump_with_enabled(current, true));
+        assert_eq!(set[0], 0x56);
+        assert_ne!(set[0], CMD_COMMIT);
+    }
+
+    #[test]
+    fn rejects_invalid_scroll_jump_enabled_state() {
+        let mut response = scroll_jump_response(false, 500);
+        response[1] = 0x02;
+        assert!(matches!(
+            parse_scroll_jump_response(&response),
+            Err(Error::InvalidScrollJumpEnabled(0x02))
+        ));
+    }
+
+    #[test]
+    fn parses_known_power_response_and_preserves_reserved_bytes() {
+        let config = parse_power_response(&power_response(5)).unwrap();
+        assert!(!config.low_power_enabled);
+        assert_eq!(config.low_power_polling, LowPowerPollingRate::Hz125);
+        assert_eq!(config.sleep_timer.whole_minutes(), Some(5));
+        assert!(config.auto_low_power_enabled);
+        assert_eq!(config.auto_low_power_threshold.percent(), 10);
+        assert_eq!(config.reserved, [0xa5; POWER_RESERVED_SIZE]);
+
+        let config = parse_power_response(&power_response(30)).unwrap();
+        assert_eq!(config.sleep_timer.whole_minutes(), Some(30));
+    }
+
+    #[test]
+    fn rejects_invalid_power_response_fields() {
+        let mut response = power_response(5);
+        response[0] = 0xa7;
+        assert!(matches!(
+            parse_power_response(&response),
+            Err(Error::UnexpectedCommand {
+                expected: CMD_GET_POWER,
+                actual: 0xa7
+            })
+        ));
+
+        let mut response = power_response(5);
+        response[1] = 0x02;
+        assert!(matches!(
+            parse_power_response(&response),
+            Err(Error::InvalidPowerBoolean {
+                field: "Low Power Mode",
+                value: 0x02
+            })
+        ));
+
+        let mut response = power_response(5);
+        response[8] = 4;
+        assert!(matches!(
+            parse_power_response(&response),
+            Err(Error::InvalidAutoLowPowerThreshold(4))
+        ));
+    }
+
+    #[test]
+    fn low_power_polling_codes_map_in_both_directions() {
+        for (code, rate) in [
+            (0x05, LowPowerPollingRate::Hz125),
+            (0x04, LowPowerPollingRate::Hz250),
+            (0x03, LowPowerPollingRate::Hz500),
+        ] {
+            assert_eq!(LowPowerPollingRate::try_from(code).unwrap(), rate);
+            assert_eq!(u8::from(rate), code);
+            assert_eq!(LowPowerPollingRate::try_from(rate.hz()).unwrap(), rate);
+        }
+        for rate in [0, 1000, 2000, 4000] {
+            assert!(matches!(
+                LowPowerPollingRate::try_from(rate),
+                Err(Error::UnsupportedLowPowerPollingRate(value)) if value == rate
+            ));
+        }
+    }
+
+    #[test]
+    fn serializes_known_sleep_timer_values() {
+        for (minutes, expected) in [
+            (5, [0xe0, 0x93, 0x04, 0x00]),
+            (10, [0xc0, 0x27, 0x09, 0x00]),
+            (20, [0x80, 0x4f, 0x12, 0x00]),
+            (30, [0x40, 0x77, 0x1b, 0x00]),
+        ] {
+            let config =
+                power_with_sleep_timer(power_config(), sleep_timer_from_minutes(minutes).unwrap());
+            let report = encode_power_config(&config).unwrap();
+            assert_eq!(report[0], CMD_SET_POWER);
+            assert_eq!(report[1], 0x00);
+            assert_eq!(report[2], 0x05);
+            assert_eq!(report[3..7], expected);
+            assert_eq!(report[7], 0x01);
+            assert_eq!(report[8], 10);
+            assert_eq!(&report[POWER_RESERVED_OFFSET..], &config.reserved);
+        }
+    }
+
+    #[test]
+    fn validates_auto_low_power_threshold_range() {
+        assert!(matches!(
+            auto_low_power_threshold(4),
+            Err(Error::InvalidAutoLowPowerThreshold(4))
+        ));
+        assert_eq!(auto_low_power_threshold(5).unwrap().percent(), 5);
+        assert_eq!(auto_low_power_threshold(25).unwrap().percent(), 25);
+        assert!(matches!(
+            auto_low_power_threshold(26),
+            Err(Error::InvalidAutoLowPowerThreshold(26))
+        ));
+    }
+
+    #[test]
+    fn validates_sleep_timer_encoding_range() {
+        assert!(matches!(
+            sleep_timer_from_minutes(0),
+            Err(Error::SleepTimerZero)
+        ));
+        for minutes in [1, 20, 30, 1440, 71_582] {
+            assert_eq!(
+                sleep_timer_from_minutes(minutes).unwrap().whole_minutes(),
+                Some(u32::try_from(minutes).unwrap())
+            );
+        }
+        assert!(matches!(
+            sleep_timer_from_minutes(71_583),
+            Err(Error::SleepTimerTooLarge)
+        ));
+    }
+
+    #[test]
+    fn power_updates_preserve_unmodified_fields() {
+        let current = power_config();
+
+        let sleep = power_with_sleep_timer(current.clone(), sleep_timer_from_minutes(30).unwrap());
+        assert_eq!(sleep.sleep_timer.whole_minutes(), Some(30));
+        assert_eq!(
+            PowerConfig {
+                sleep_timer: current.sleep_timer,
+                ..sleep.clone()
+            },
+            current
+        );
+
+        let threshold = power_with_auto_low_power_threshold(
+            current.clone(),
+            auto_low_power_threshold(25).unwrap(),
+        );
+        assert_eq!(threshold.auto_low_power_threshold.percent(), 25);
+        assert_eq!(
+            PowerConfig {
+                auto_low_power_threshold: current.auto_low_power_threshold,
+                ..threshold.clone()
+            },
+            current
+        );
+
+        let low_power = power_with_low_power_enabled(current.clone(), true);
+        assert!(low_power.low_power_enabled);
+        assert_eq!(
+            PowerConfig {
+                low_power_enabled: current.low_power_enabled,
+                ..low_power
+            },
+            current
+        );
     }
 
     #[test]
@@ -1057,18 +2178,79 @@ mod tests {
     }
 
     #[test]
-    fn dpi_use_preserves_existing_stages() {
+    fn dpi_use_selects_by_stage_id_and_preserves_existing_stages() {
         let current = DpiConfig {
             stages: vec![
-                DpiStage { x: 400, y: 800 },
+                DpiStage {
+                    x: 400,
+                    y: 800,
+                    lod: LiftOffDistance::High,
+                },
                 DpiStage::scalar(800),
                 DpiStage::scalar(1600),
             ],
             active: 2,
         };
-        let updated = config_with_active_dpi(&current, 800).unwrap();
+        let updated = config_with_active_stage(&current, 2).unwrap();
         assert_eq!(updated.stages, current.stages);
         assert_eq!(updated.active, 1);
+        assert!(matches!(
+            config_with_active_stage(&current, 800),
+            Err(Error::InvalidStageId(800))
+        ));
+    }
+
+    #[test]
+    fn stage_ids_map_to_zero_based_firmware_indexes() {
+        assert_eq!(stage_id_to_index(1).unwrap(), 0);
+        assert_eq!(stage_id_to_index(5).unwrap(), 4);
+    }
+
+    #[test]
+    fn rejects_nonexistent_stage() {
+        let current = scalar_config(&[400, 800, 1600], 0);
+        assert!(matches!(
+            config_with_active_stage(&current, 4),
+            Err(Error::StageNotConfigured {
+                stage_id: 4,
+                stage_count: 3,
+            })
+        ));
+        assert!(matches!(
+            config_with_lift_off_distance(&current, 4, LiftOffDistance::High),
+            Err(Error::StageNotConfigured {
+                stage_id: 4,
+                stage_count: 3,
+            })
+        ));
+    }
+
+    #[test]
+    fn changing_lod_preserves_every_other_stage_field() {
+        let current = DpiConfig {
+            stages: vec![
+                DpiStage::scalar(400),
+                DpiStage {
+                    x: 800,
+                    y: 900,
+                    lod: LiftOffDistance::Low,
+                },
+                DpiStage {
+                    x: 1600,
+                    y: 1700,
+                    lod: LiftOffDistance::High,
+                },
+            ],
+            active: 2,
+        };
+        let updated = config_with_lift_off_distance(&current, 2, LiftOffDistance::High).unwrap();
+
+        assert_eq!(updated.active, current.active);
+        assert_eq!(updated.stages[0], current.stages[0]);
+        assert_eq!(updated.stages[1].x, current.stages[1].x);
+        assert_eq!(updated.stages[1].y, current.stages[1].y);
+        assert_eq!(updated.stages[1].lod, LiftOffDistance::High);
+        assert_eq!(updated.stages[2], current.stages[2]);
     }
 
     #[test]
@@ -1086,8 +2268,32 @@ mod tests {
     #[test]
     fn replacing_dpi_stages_preserves_matching_scalar_active_value() {
         let current = scalar_config(&[400, 800, 1600], 1);
-        let updated = config_from_scalar_dpis(&current, &[400, 1600, 800]).unwrap();
+        let updated =
+            config_from_dpi_values(&current, &[(400, 400), (1600, 1600), (800, 800)]).unwrap();
         assert_eq!(updated.active, 2);
+    }
+
+    #[test]
+    fn replacing_dpi_stages_preserves_lod_by_position() {
+        let mut current = scalar_config(&[400, 800, 1600], 0);
+        current.stages[0].lod = LiftOffDistance::High;
+        current.stages[2].lod = LiftOffDistance::High;
+
+        let updated =
+            config_from_dpi_values(&current, &[(500, 600), (900, 1000), (1700, 1800)]).unwrap();
+        assert_eq!((updated.stages[0].x, updated.stages[0].y), (500, 600));
+        assert_eq!((updated.stages[1].x, updated.stages[1].y), (900, 1000));
+        assert_eq!((updated.stages[2].x, updated.stages[2].y), (1700, 1800));
+        assert_eq!(updated.stages[0].lod, LiftOffDistance::High);
+        assert_eq!(updated.stages[1].lod, LiftOffDistance::Low);
+        assert_eq!(updated.stages[2].lod, LiftOffDistance::High);
+    }
+
+    #[test]
+    fn newly_created_dpi_stage_defaults_to_low_lod() {
+        let current = scalar_config(&[400], 0);
+        let updated = config_from_dpi_values(&current, &[(400, 400), (800, 1600)]).unwrap();
+        assert_eq!(updated.stages[1].lod, LiftOffDistance::Low);
     }
 
     #[test]
@@ -1128,6 +2334,164 @@ mod tests {
         .unwrap();
 
         assert_eq!(matched, identity_response);
+    }
+
+    #[test]
+    fn identity_query_succeeds_on_first_request_without_retry() {
+        let writes = std::cell::Cell::new(0);
+        let response = identity_protocol_response("6271700431492500250");
+        let mut reads = std::collections::VecDeque::from([Some(response)]);
+
+        let matched = send_identity_query_with_retry(
+            |report| {
+                assert_eq!(report[0], CMD_GET_DEVICE_IDENTITY);
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| Ok(reads.pop_front().flatten()),
+        )
+        .unwrap();
+
+        assert_eq!(matched, response);
+        assert_eq!(writes.get(), 1);
+    }
+
+    #[test]
+    fn identity_query_resends_after_attempt_timeout() {
+        let writes = std::cell::Cell::new(0);
+        let response = identity_protocol_response("6271700431492500250");
+        let mut reads = std::collections::VecDeque::from([None, Some(response)]);
+
+        let matched = send_identity_query_with_retry(
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| Ok(reads.pop_front().flatten()),
+        )
+        .unwrap();
+
+        assert_eq!(matched, response);
+        assert_eq!(writes.get(), 2);
+    }
+
+    #[test]
+    fn identity_retry_keeps_filtering_stale_reports_across_attempts() {
+        let writes = std::cell::Cell::new(0);
+        let response = identity_protocol_response("6271700431492500250");
+        let mut reads = std::collections::VecDeque::from([
+            Some(protocol_report(CMD_COMMIT)),
+            Some(protocol_report(0x40)),
+            None,
+            Some(protocol_report(CMD_SET_POLLING)),
+            Some(response),
+        ]);
+
+        let matched = send_identity_query_with_retry(
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| Ok(reads.pop_front().flatten()),
+        )
+        .unwrap();
+
+        assert_eq!(matched, response);
+        assert_eq!(writes.get(), 2);
+    }
+
+    #[test]
+    fn identity_retry_timeout_is_bounded_and_preserves_diagnostics() {
+        let writes = std::cell::Cell::new(0);
+        let mut reads = std::collections::VecDeque::from([
+            Some(protocol_report(CMD_COMMIT)),
+            None,
+            Some(protocol_report(0x40)),
+            None,
+            None,
+            None,
+            None,
+        ]);
+
+        let error = send_identity_query_with_retry(
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| Ok(reads.pop_front().flatten()),
+        )
+        .unwrap_err();
+
+        assert_eq!(writes.get(), IDENTITY_MAX_ATTEMPTS);
+        assert_eq!(
+            error.to_string(),
+            "timed out waiting for response 0xf0 (observed: 0x11, 0x40)"
+        );
+    }
+
+    #[test]
+    fn identity_retry_does_not_retry_non_timeout_errors() {
+        let writes = std::cell::Cell::new(0);
+        let error = send_identity_query_with_retry(
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| {
+                Err(Error::MalformedResponse {
+                    command: CMD_GET_DEVICE_IDENTITY,
+                    expected: REPORT_SIZE,
+                    actual: 8,
+                })
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(writes.get(), 1);
+        assert!(matches!(error, Error::MalformedResponse { actual: 8, .. }));
+
+        let writes = std::cell::Cell::new(0);
+        let reads = std::cell::Cell::new(0);
+        let error = send_identity_query_with_retry(
+            |_| {
+                writes.set(writes.get() + 1);
+                Err(Error::ShortWrite {
+                    command: CMD_GET_DEVICE_IDENTITY,
+                    expected: WRITE_SIZE,
+                    actual: 0,
+                })
+            },
+            |_| {
+                reads.set(reads.get() + 1);
+                Ok(None)
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(writes.get(), 1);
+        assert_eq!(reads.get(), 0);
+        assert!(matches!(error, Error::ShortWrite { actual: 0, .. }));
+    }
+
+    #[test]
+    fn malformed_matching_identity_response_is_not_retried() {
+        let writes = std::cell::Cell::new(0);
+        let mut response = protocol_report(CMD_GET_DEVICE_IDENTITY);
+        response[1] = 0x00;
+        let returned = send_identity_query_with_retry(
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| Ok(Some(response)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            parse_device_identity_response(&returned),
+            Err(Error::EmptyDeviceIdentity)
+        ));
+        assert_eq!(writes.get(), 1);
     }
 
     #[test]
