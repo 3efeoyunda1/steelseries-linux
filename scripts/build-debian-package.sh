@@ -34,7 +34,13 @@ tar -czf "${build_root}/steelseries-linux_${version}.orig.tar.gz" \
 (
     cd "$source_dir"
     if [ "${STEELSERIES_EXTERNAL_RUST_TOOLCHAIN:-0}" = "1" ]; then
-        dpkg-buildpackage -b -us -uc -d
+        external_cargo=$(command -v cargo)
+        external_rustc=$(command -v rustc)
+        external_rustdoc=$(command -v rustdoc)
+        CARGO="$external_cargo" \
+            RUSTC="$external_rustc" \
+            RUSTDOC="$external_rustdoc" \
+            dpkg-buildpackage -b -us -uc -d
     else
         dpkg-buildpackage -b -us -uc
     fi
