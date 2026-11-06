@@ -15,9 +15,10 @@ use steelseries_core::{
 
 use output::{
     ActiveStageData, AutoLowPowerEnabledData, AutoLowPowerThresholdData, BatteryData,
-    CommandOutput, DelayData, DevicesData, DpiData, EnabledData, HelpData, LodData, LodSetData,
-    LowPowerEnabledData, LowPowerPollingData, PollingData, PollingSetData, PowerData,
-    ScrollJumpData, SleepTimerData, error_document, invalid_argument_document, lod_name,
+    CommandOutput, DelayData, DeviceDescribeData, DeviceSnapshotData, DevicesData, DpiData,
+    EnabledData, HelpData, LodData, LodSetData, LowPowerEnabledData, LowPowerPollingData,
+    PollingData, PollingSetData, PowerData, ScrollJumpData, SleepTimerData, error_document,
+    invalid_argument_document, lod_name,
 };
 
 const DPI_HELP: &str = "DPI commands:\n  steelseriesctl dpi get\n  steelseriesctl dpi set <dpi1|X1xY1> [dpi2|X2xY2] ... [dpi5|X5xY5]\n  steelseriesctl dpi use <stage-id>\n\nA single value applies to both axes; use XxY for independent axis values.";
@@ -28,7 +29,8 @@ const POWER_HELP: &str = "Power Management commands:\n  steelseriesctl power get
 const WIRELESS_STABILITY_HELP: &str = "Wireless Stability Enhancement commands:\n  steelseriesctl wireless-stability get\n  steelseriesctl wireless-stability set <on|off>";
 const BLUETOOTH_SMOOTHING_HELP: &str = "Bluetooth Smoothing commands:\n  steelseriesctl bluetooth-smoothing get\n  steelseriesctl bluetooth-smoothing set <on|off>";
 const SCROLL_JUMP_HELP: &str = "Scroll Jump Protection commands:\n  steelseriesctl scroll-jump get\n  steelseriesctl scroll-jump set <on|off>\n  steelseriesctl scroll-jump delay <milliseconds>";
-const ROOT_HELP: &str = "SteelSeries Linux CLI\n\nCommands:\n  devices\n  dpi\n  lod\n  polling\n  battery\n  power\n  wireless-stability\n  bluetooth-smoothing\n  scroll-jump\n\nOptions:\n  -d, --device <ID>  Select a physical device by device ID\n      --json         Emit machine-readable JSON";
+const DEVICE_HELP: &str = "Device commands:\n  steelseriesctl device list\n  steelseriesctl device describe\n  steelseriesctl device snapshot";
+const ROOT_HELP: &str = "SteelSeries Linux CLI\n\nCommands:\n  device               List, describe, or inspect supported SteelSeries devices\n  dpi\n  lod\n  polling\n  battery\n  power\n  wireless-stability\n  bluetooth-smoothing\n  scroll-jump\n\nOptions:\n  -d, --device <ID>  Select a physical device by device ID\n      --json         Emit machine-readable JSON";
 
 #[derive(Debug, Parser)]
 #[command(name = "steelseriesctl", about = "SteelSeries Linux CLI", version)]
@@ -45,8 +47,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Detect supported SteelSeries devices.
-    Devices,
+    /// List, describe, or inspect supported SteelSeries devices.
+    Device {
+        #[command(subcommand)]
+        command: Option<DeviceCommand>,
+    },
     /// Read or change DPI stages.
     Dpi {
         #[command(subcommand)]
@@ -87,6 +92,16 @@ enum Command {
         #[command(subcommand)]
         command: Option<ScrollJumpCommand>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeviceCommand {
+    /// List usable supported physical devices.
+    List,
+    /// Describe the selected device and its capabilities.
+    Describe,
+    /// Read the selected device's complete supported state.
+    Snapshot,
 }
 
 #[derive(Debug, Subcommand)]
@@ -341,7 +356,10 @@ fn run(cli: Cli) -> Result<CommandOutput, Error> {
             ROOT_HELP,
             HelpData { help: ROOT_HELP },
         )),
-        Some(Command::Devices) => run_devices(),
+        Some(Command::Device { command: None }) => Ok(help_output("device", DEVICE_HELP)),
+        Some(Command::Device {
+            command: Some(command),
+        }) => run_device(command, requested_identity),
         Some(Command::Dpi { command: None }) => Ok(help_output("dpi", DPI_HELP)),
         Some(Command::Dpi {
             command: Some(command),
@@ -390,7 +408,16 @@ fn help_output(command: &'static str, help: &'static str) -> CommandOutput {
 fn command_identifier(cli: &Cli) -> &'static str {
     match &cli.command {
         None => "help",
-        Some(Command::Devices) => "devices",
+        Some(Command::Device { command: None }) => "device",
+        Some(Command::Device {
+            command: Some(DeviceCommand::List),
+        }) => "device.list",
+        Some(Command::Device {
+            command: Some(DeviceCommand::Describe),
+        }) => "device.describe",
+        Some(Command::Device {
+            command: Some(DeviceCommand::Snapshot),
+        }) => "device.snapshot",
         Some(Command::Dpi { command: None }) => "dpi",
         Some(Command::Dpi {
             command: Some(DpiCommand::Get),
@@ -480,7 +507,18 @@ fn command_identifier(cli: &Cli) -> &'static str {
     }
 }
 
-fn run_devices() -> Result<CommandOutput, Error> {
+fn run_device(
+    command: DeviceCommand,
+    requested_identity: Option<&str>,
+) -> Result<CommandOutput, Error> {
+    match command {
+        DeviceCommand::List => run_device_list(),
+        DeviceCommand::Describe => run_device_describe(requested_identity),
+        DeviceCommand::Snapshot => run_device_snapshot(requested_identity),
+    }
+}
+
+fn run_device_list() -> Result<CommandOutput, Error> {
     let devices = Aerox3WirelessGen2::discover()?;
     let mut human = "SteelSeries devices:".to_owned();
     if devices.is_empty() {
@@ -498,10 +536,173 @@ fn run_devices() -> Result<CommandOutput, Error> {
         ));
     }
     Ok(CommandOutput::new(
-        "devices",
+        "device.list",
         human,
         DevicesData::from_devices(&devices),
     ))
+}
+
+fn run_device_describe(requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
+    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+    let physical_device = device.physical_device();
+    Ok(CommandOutput::new(
+        "device.describe",
+        format_device_description(physical_device),
+        DeviceDescribeData::new(physical_device, Aerox3WirelessGen2::capabilities()),
+    ))
+}
+
+fn format_device_identity(device: &steelseries_core::PhysicalDevice) -> String {
+    format!(
+        "Device: {}\nID: {}\nConnection: {}",
+        device.model, device.identity, device.active_connection
+    )
+}
+
+fn format_device_description(device: &steelseries_core::PhysicalDevice) -> String {
+    let capabilities = Aerox3WirelessGen2::capabilities();
+    let rates = |values: &[PollingRate]| {
+        values
+            .iter()
+            .map(|rate| rate.hz().to_string())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let low_power_rates = capabilities
+        .power
+        .low_power_polling
+        .iter()
+        .map(|rate| rate.hz().to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    format!(
+        "{}\n\nCapabilities:\nDPI: {}-{}, step {}, max {} stages, independent X/Y\nLOD: Low / High, per stage\nWireless Polling: {} Hz\nWired Polling: {} Hz\nBattery: Supported (charging state)\nLow Power Mode: Supported\nLow Power Polling: {} Hz\nSleep Timer: {}-{} min, step {}\nAuto Low Power Threshold: {}-{}%, step {}\nWireless Stability Enhancement: Supported\nBluetooth Smoothing: Supported\nScroll Jump Protection: {}-{} ms, step {}",
+        format_device_identity(device),
+        capabilities.dpi.min,
+        capabilities.dpi.max,
+        capabilities.dpi.step,
+        capabilities.dpi.max_stages,
+        rates(capabilities.polling.wireless),
+        rates(capabilities.polling.wired),
+        low_power_rates,
+        capabilities.power.sleep_timer.min,
+        capabilities.power.sleep_timer.max,
+        capabilities.power.sleep_timer.step,
+        capabilities.power.auto_low_power_threshold.min,
+        capabilities.power.auto_low_power_threshold.max,
+        capabilities.power.auto_low_power_threshold.step,
+        capabilities.scroll_jump.delay.min,
+        capabilities.scroll_jump.delay.max,
+        capabilities.scroll_jump.delay.step,
+    )
+}
+
+fn run_device_snapshot(requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
+    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+    let physical_device = device.physical_device().clone();
+    let battery = device.get_battery_status()?;
+    let dpi = device.get_dpi_config()?;
+    let polling = device.get_polling_config()?;
+    let power = device.get_power_config()?;
+    let wireless_features = device.get_wireless_features()?;
+    let scroll_jump = device.get_scroll_jump_config()?;
+    let data = DeviceSnapshotData::new(
+        &physical_device,
+        battery,
+        &dpi,
+        polling,
+        &power,
+        &wireless_features,
+        &scroll_jump,
+    );
+    let human = format_device_snapshot(&data);
+    Ok(CommandOutput::new("device.snapshot", human, data))
+}
+
+fn format_device_snapshot(snapshot: &DeviceSnapshotData) -> String {
+    let battery = match (snapshot.battery.percentage, snapshot.battery.charging) {
+        (Some(percentage), Some(charging)) => format!(
+            "Battery: {percentage}%\nCharging: {}",
+            if charging { "Yes" } else { "No" }
+        ),
+        _ => "Battery: unavailable".to_owned(),
+    };
+    let mut dpi = vec!["DPI Stages:".to_owned()];
+    for stage in &snapshot.dpi.stages {
+        let marker = if stage.stage == snapshot.dpi.active_stage {
+            '>'
+        } else {
+            ' '
+        };
+        let value = if stage.x == stage.y {
+            format!("{} DPI", stage.x)
+        } else {
+            format!("{}x{} DPI", stage.x, stage.y)
+        };
+        dpi.push(format!("{marker} {}: {value}", stage.stage));
+    }
+    let mut lod = vec!["Lift-off Distance:".to_owned()];
+    for stage in &snapshot.lod.stages {
+        let marker = if stage.stage == snapshot.dpi.active_stage {
+            '>'
+        } else {
+            ' '
+        };
+        let value = match stage.lod {
+            "low" => "Low (1 mm)",
+            "high" => "High (2 mm)",
+            value => value,
+        };
+        lod.push(format!("{marker} {}: {value}", stage.stage));
+    }
+    let sleep_timer = snapshot.power.sleep_timer_minutes.map_or_else(
+        || format!("{} ms", snapshot.power.sleep_timer_ms),
+        |minutes| format!("{minutes} min"),
+    );
+    format!(
+        "Device Snapshot:\nDevice: {}\nID: {}\nConnection: {}\n\n{}\n\n{}\n\n{}\n\nPolling Rate:\n  Wireless: {} Hz\n  Wired:    {} Hz\n\nPower Management:\nLow Power Mode: {}\nLow Power Polling: {} Hz\nSleep Timer: {}\nAuto Low Power: {}\nAuto Low Power Threshold: {}%\n\nWireless Stability Enhancement: {}\nBluetooth Smoothing: {}\nScroll Jump Protection: {}\nDelay: {} ms",
+        snapshot.device.name,
+        snapshot.device.id,
+        match snapshot.device.connection {
+            "wired" => "Wired",
+            "2.4_ghz" => "2.4 GHz",
+            value => value,
+        },
+        battery,
+        dpi.join("\n"),
+        lod.join("\n"),
+        snapshot.polling.wireless_hz,
+        snapshot.polling.wired_hz,
+        if snapshot.power.low_power_enabled {
+            "On"
+        } else {
+            "Off"
+        },
+        snapshot.power.low_power_polling_hz,
+        sleep_timer,
+        if snapshot.power.auto_low_power_enabled {
+            "On"
+        } else {
+            "Off"
+        },
+        snapshot.power.auto_low_power_threshold_percent,
+        if snapshot.wireless_stability.enabled {
+            "On"
+        } else {
+            "Off"
+        },
+        if snapshot.bluetooth_smoothing.enabled {
+            "On"
+        } else {
+            "Off"
+        },
+        if snapshot.scroll_jump.enabled {
+            "On"
+        } else {
+            "Off"
+        },
+        snapshot.scroll_jump.delay_ms,
+    )
 }
 
 fn run_dpi(command: DpiCommand, requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
@@ -664,19 +865,22 @@ fn run_battery(
         BatteryCommand::Get => {
             let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
             let status = device.get_battery_status()?;
-            let human = match status {
-                BatteryStatus::Available { percent, charging } => format!(
-                    "Battery: {percent}%\nCharging: {}",
-                    if charging { "Yes" } else { "No" }
-                ),
-                BatteryStatus::Unavailable => "Battery: unavailable".to_owned(),
-            };
             Ok(CommandOutput::new(
                 "battery.get",
-                human,
+                format_battery_status(status),
                 BatteryData::from(status),
             ))
         }
+    }
+}
+
+fn format_battery_status(status: BatteryStatus) -> String {
+    match status {
+        BatteryStatus::Available { percent, charging } => format!(
+            "Battery: {percent}%\nCharging: {}",
+            if charging { "Yes" } else { "No" }
+        ),
+        BatteryStatus::Unavailable => "Battery: unavailable".to_owned(),
     }
 }
 
@@ -964,14 +1168,22 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        AutoLowPowerCommand, BatteryCommand, Cli, Command, DpiCommand, DpiInput,
+        AutoLowPowerCommand, BatteryCommand, Cli, Command, DeviceCommand, DpiCommand, DpiInput,
         FeatureToggleCommand, LodCommand, LodValue, LowPowerCommand, PollingCommand, PollingMode,
         PowerCommand, PowerState, ScrollJumpCommand, SleepCommand, apply_scroll_jump_change,
         apply_wireless_feature_change, command_identifier, dpi_stages_updated_message,
-        format_bluetooth_smoothing, format_dpi_config, format_lod_config, format_scroll_jump,
-        format_wireless_stability,
+        format_bluetooth_smoothing, format_device_description, format_device_snapshot,
+        format_dpi_config, format_lod_config, format_scroll_jump, format_wireless_stability,
     };
-    use steelseries_core::{DpiConfig, DpiStage, LiftOffDistance};
+    use steelseries_core::{
+        ConnectionType, DeviceIdentity, DeviceModel, DpiConfig, DpiStage, LiftOffDistance,
+        PhysicalDevice,
+    };
+
+    use crate::output::{
+        BatteryData, DeviceData, DeviceSnapshotData, DpiData, DpiStageData, EnabledData, LodData,
+        LodStageData, PollingData, PowerData, ScrollJumpData,
+    };
 
     fn stage_config() -> DpiConfig {
         DpiConfig {
@@ -985,6 +1197,16 @@ mod tests {
                 DpiStage::scalar(1550),
             ],
             active: 1,
+        }
+    }
+
+    fn physical_device() -> PhysicalDevice {
+        PhysicalDevice {
+            model: DeviceModel::Aerox3WirelessGen2,
+            identity: DeviceIdentity::new("6271700431492500250"),
+            active_connection: ConnectionType::Wireless2_4Ghz,
+            wired_endpoint_available: false,
+            receiver_endpoint_available: true,
         }
     }
 
@@ -1131,12 +1353,27 @@ mod tests {
         assert!(selected.json);
         assert_eq!(selected.device.as_deref(), Some("6271700431492500250"));
         assert_eq!(command_identifier(&selected), "battery.get");
+
+        let device = Cli::try_parse_from([
+            "steelseriesctl",
+            "device",
+            "describe",
+            "--json",
+            "--device",
+            "6271700431492500250",
+        ])
+        .unwrap();
+        assert!(device.json);
+        assert_eq!(device.device.as_deref(), Some("6271700431492500250"));
+        assert_eq!(command_identifier(&device), "device.describe");
     }
 
     #[test]
     fn uses_stable_json_command_identifiers() {
         for (arguments, expected) in [
-            (&["devices"][..], "devices"),
+            (&["device", "list"][..], "device.list"),
+            (&["device", "describe"][..], "device.describe"),
+            (&["device", "snapshot"][..], "device.snapshot"),
             (&["dpi", "get"][..], "dpi.get"),
             (&["lod", "get"][..], "lod.get"),
             (&["polling", "get"][..], "polling.get"),
@@ -1158,6 +1395,121 @@ mod tests {
             .unwrap();
             assert_eq!(command_identifier(&cli), expected);
         }
+    }
+
+    #[test]
+    fn device_command_group_replaces_devices_and_help_needs_no_hardware() {
+        assert!(Cli::try_parse_from(["steelseriesctl", "devices"]).is_err());
+
+        let cli = Cli::try_parse_from(["steelseriesctl", "device"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Device { command: None })
+        ));
+        let output = super::run(cli).unwrap();
+        assert!(output.human().contains("steelseriesctl device list"));
+
+        for (name, expected) in [
+            ("list", DeviceCommand::List),
+            ("describe", DeviceCommand::Describe),
+            ("snapshot", DeviceCommand::Snapshot),
+        ] {
+            let cli = Cli::try_parse_from(["steelseriesctl", "device", name]).unwrap();
+            assert!(matches!(
+                (cli.command, expected),
+                (
+                    Some(Command::Device {
+                        command: Some(DeviceCommand::List)
+                    }),
+                    DeviceCommand::List
+                ) | (
+                    Some(Command::Device {
+                        command: Some(DeviceCommand::Describe)
+                    }),
+                    DeviceCommand::Describe
+                ) | (
+                    Some(Command::Device {
+                        command: Some(DeviceCommand::Snapshot)
+                    }),
+                    DeviceCommand::Snapshot
+                )
+            ));
+        }
+    }
+
+    #[test]
+    fn formats_device_describe_human_output() {
+        let output = format_device_description(&physical_device());
+        assert_eq!(
+            output,
+            "Device: Aerox 3 Wireless Gen 2\nID: 6271700431492500250\nConnection: 2.4 GHz\n\nCapabilities:\nDPI: 50-26000, step 50, max 5 stages, independent X/Y\nLOD: Low / High, per stage\nWireless Polling: 125/250/500/1000/2000/4000 Hz\nWired Polling: 125/250/500/1000 Hz\nBattery: Supported (charging state)\nLow Power Mode: Supported\nLow Power Polling: 125/250/500 Hz\nSleep Timer: 1-71582 min, step 1\nAuto Low Power Threshold: 5-25%, step 1\nWireless Stability Enhancement: Supported\nBluetooth Smoothing: Supported\nScroll Jump Protection: 100-1500 ms, step 100"
+        );
+    }
+
+    #[test]
+    fn formats_device_snapshot_human_output() {
+        let snapshot = DeviceSnapshotData {
+            device: DeviceData {
+                id: "6271700431492500250".to_owned(),
+                name: "Aerox 3 Wireless Gen 2",
+                model_key: "aerox_3_wireless_gen2",
+                connection: "2.4_ghz",
+            },
+            battery: BatteryData {
+                percentage: Some(87),
+                charging: Some(false),
+            },
+            dpi: DpiData {
+                active_stage: 2,
+                stages: vec![
+                    DpiStageData {
+                        stage: 1,
+                        x: 400,
+                        y: 400,
+                    },
+                    DpiStageData {
+                        stage: 2,
+                        x: 800,
+                        y: 1600,
+                    },
+                ],
+            },
+            lod: LodData {
+                stages: vec![
+                    LodStageData {
+                        stage: 1,
+                        lod: "low",
+                    },
+                    LodStageData {
+                        stage: 2,
+                        lod: "high",
+                    },
+                ],
+            },
+            polling: PollingData {
+                wireless_hz: 4_000,
+                wired_hz: 1_000,
+            },
+            power: PowerData {
+                low_power_enabled: false,
+                low_power_polling_hz: 500,
+                sleep_timer_minutes: Some(5),
+                sleep_timer_ms: 300_000,
+                auto_low_power_enabled: true,
+                auto_low_power_threshold_percent: 10,
+            },
+            wireless_stability: EnabledData { enabled: true },
+            bluetooth_smoothing: EnabledData { enabled: false },
+            scroll_jump: ScrollJumpData {
+                enabled: true,
+                delay_ms: 500,
+            },
+        };
+        let output = format_device_snapshot(&snapshot);
+        assert_eq!(
+            output,
+            "Device Snapshot:\nDevice: Aerox 3 Wireless Gen 2\nID: 6271700431492500250\nConnection: 2.4 GHz\n\nBattery: 87%\nCharging: No\n\nDPI Stages:\n  1: 400 DPI\n> 2: 800x1600 DPI\n\nLift-off Distance:\n  1: Low (1 mm)\n> 2: High (2 mm)\n\nPolling Rate:\n  Wireless: 4000 Hz\n  Wired:    1000 Hz\n\nPower Management:\nLow Power Mode: Off\nLow Power Polling: 500 Hz\nSleep Timer: 5 min\nAuto Low Power: On\nAuto Low Power Threshold: 10%\n\nWireless Stability Enhancement: On\nBluetooth Smoothing: Off\nScroll Jump Protection: On\nDelay: 500 ms"
+        );
     }
 
     #[test]

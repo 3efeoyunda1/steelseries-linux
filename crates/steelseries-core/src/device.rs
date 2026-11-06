@@ -14,6 +14,15 @@ impl fmt::Display for DeviceModel {
     }
 }
 
+impl DeviceModel {
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Aerox3WirelessGen2 => "aerox_3_wireless_gen2",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DpiStage {
     pub x: u16,
@@ -55,10 +64,26 @@ pub struct DpiConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DpiCapabilities {
+    pub supported: bool,
     pub min: u16,
     pub max: u16,
     pub step: u16,
     pub max_stages: usize,
+    pub independent_axes: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiftOffDistanceValueCapability {
+    pub value: LiftOffDistance,
+    pub label: &'static str,
+    pub distance_mm: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiftOffDistanceCapabilities {
+    pub supported: bool,
+    pub per_stage: bool,
+    pub values: &'static [LiftOffDistanceValueCapability],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +124,36 @@ pub struct PollingConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PollingCapabilities {
+    pub supported: bool,
     pub wireless: &'static [PollingRate],
     pub wired: &'static [PollingRate],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatteryCapabilities {
+    pub supported: bool,
+    pub charging_state: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RangeCapabilities<T> {
+    pub min: T,
+    pub max: T,
+    pub step: T,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecommendedRange<T> {
+    pub min: T,
+    pub max: T,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleepTimerCapabilities {
+    pub min: u64,
+    pub max: u64,
+    pub step: u64,
+    pub recommended_range: Option<RecommendedRange<u64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,8 +247,13 @@ pub struct WirelessFeatures {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WirelessFeatureCapabilities {
-    pub wireless_stability: bool,
-    pub bluetooth_smoothing: bool,
+    pub wireless_stability: FeatureCapabilities,
+    pub bluetooth_smoothing: FeatureCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureCapabilities {
+    pub supported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,24 +266,25 @@ pub struct ScrollJumpConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollJumpCapabilities {
     pub supported: bool,
-    pub delay_min_ms: u16,
-    pub delay_max_ms: u16,
-    pub delay_step_ms: u16,
+    pub delay: RangeCapabilities<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PowerCapabilities {
+    pub supported: bool,
+    pub low_power_mode: bool,
     pub low_power_polling: &'static [LowPowerPollingRate],
-    pub auto_low_power_threshold_min: u8,
-    pub auto_low_power_threshold_max: u8,
-    pub sleep_timer_min_minutes: u64,
-    pub sleep_timer_max_minutes: u64,
+    pub sleep_timer: SleepTimerCapabilities,
+    pub auto_low_power_supported: bool,
+    pub auto_low_power_threshold: RangeCapabilities<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceCapabilities {
     pub dpi: DpiCapabilities,
+    pub lod: LiftOffDistanceCapabilities,
     pub polling: PollingCapabilities,
+    pub battery: BatteryCapabilities,
     pub power: PowerCapabilities,
     pub wireless_features: WirelessFeatureCapabilities,
     pub scroll_jump: ScrollJumpCapabilities,
@@ -241,8 +300,9 @@ pub enum BatteryStatus {
 pub struct DeviceIdentity(String);
 
 impl DeviceIdentity {
-    pub(crate) fn new(value: String) -> Self {
-        Self(value)
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
     }
 
     #[must_use]
@@ -274,6 +334,7 @@ impl fmt::Display for ConnectionType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalDevice {
+    pub model: DeviceModel,
     pub identity: DeviceIdentity,
     pub active_connection: ConnectionType,
     pub wired_endpoint_available: bool,

@@ -24,15 +24,16 @@ cp \
 tar -czf "$source_archive" \
     --transform "s,^,steelseries-linux-${version}/," \
     -C "$repo_root" \
-    Cargo.toml Cargo.lock crates udev LICENSE README.md
+    Cargo.toml Cargo.lock crates assets udev LICENSE README.md
 
 (
     cd "$build_root"
     makepkg -Csf
 )
 
-mkdir -p "${repo_root}/dist"
-for package in "${build_root}"/steelseries-linux-"${version}"-*.pkg.tar.zst; do
+output_dir="${repo_root}/dist/arch"
+mkdir -p "$output_dir"
+for package in "${build_root}"/steelseries-linux*-"${version}"-*.pkg.tar.zst; do
     [ -f "$package" ] || continue
-    cp -f "$package" "${repo_root}/dist/"
+    cp -f "$package" "$output_dir/"
 done

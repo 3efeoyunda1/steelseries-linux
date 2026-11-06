@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40" viewBox="0 0 64 40" fill="none" role="img" aria-label="Battery 30%">
+  <g>
+    <rect x="6.5" y="10.0" width="13.20" height="20.0" rx="2.50" fill="#FFFFFF"/>
+    <rect x="2.5" y="6.0" width="52.0" height="28.0" rx="5.5" fill="none" stroke="#FFFFFF" stroke-width="2.8"/>
+    <rect x="57.0" y="13.5" width="5.0" height="13.0" rx="2.0" fill="#FFFFFF"/>
+  </g>
+</svg>

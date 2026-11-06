@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- Device capability metadata for frontend and script integration
+- `device describe` for model identity and supported constraints
+- `device snapshot` for complete read-only state in one CLI process
+- Structured JSON validation fields and details
+- Initial optional Slint GUI with asynchronous device discovery, refresh, and device selection
+- JSON-only CLI subprocess backend for the GUI, with `STEELSERIESCTL_PATH` development override
+- Capability-aware read-only GUI dashboard using `device describe` and `device snapshot`
+- Capability-driven GUI controls for DPI, LOD, polling, power, wireless features, and Scroll Jump
+
+### Changed
+
+- Replaced the top-level `devices` command with `device list`
+
 ## 0.3.0
 
 ### Added

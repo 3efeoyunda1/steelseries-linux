@@ -1,0 +1,3 @@
+target/release/steelseries-gui usr/bin
+assets/app/steelseries-linux.desktop usr/share/applications
+assets/app/steelseries-linux.svg usr/share/icons/hicolor/scalable/apps

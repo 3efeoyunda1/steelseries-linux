@@ -2,12 +2,13 @@
 members = [
     "crates/steelseries-core",
     "crates/steelseries-cli",
+    "crates/steelseries-gui",
 ]
 default-members = ["crates/steelseries-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.98.1"
 license = "MIT"
@@ -17,8 +18,11 @@ repository = "https://github.com/3efeoyunda1/steelseries-linux"
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
 hidapi = "2.6"
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18"] }
+slint-build = { version = "1.18.1", default-features = false, features = ["compat-1-18", "renderer-software"] }
 thiserror = "2.0"
 
 [workspace.lints.rust]

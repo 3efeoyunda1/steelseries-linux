@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Dis halka: 12 ve 9 yonlerinde dengeli bosluklar -->
+  <path d="M 13.6219 3.6562 A 8.5 8.5 0 1 1 3.6562 13.6219" fill="none" stroke="#F2F2F2" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M 3.6562 10.3781 A 8.5 8.5 0 0 1 10.3781 3.6562" fill="none" stroke="#FF6900" stroke-width="2.6" stroke-linecap="round"/>
+  <!-- Ic halka ile tek parca gorunen, duz yanli ve yalnizca uclari yuvarlak uzantilar -->
+  <circle cx="12" cy="12" r="3.6" fill="none" stroke="#F2F2F2" stroke-width="2.15"/>
+  <path d="M 12 8.15 V 6.52 M 8.15 12 H 6.52" fill="none" stroke="#F2F2F2" stroke-width="2.15" stroke-linecap="round"/>
+  <!-- Turuncu merkez -->
+  <circle cx="12" cy="12" r="1.85" fill="#FF6900"/>
+</svg>

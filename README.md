@@ -38,6 +38,7 @@ Bluetooth control is currently not supported.
 - Scroll Jump Protection with configurable delay
 - Persistent configuration writes
 - Machine-readable JSON output for scripts and frontends
+- Optional lightweight Slint device dashboard with capability-driven configuration controls
 
 ### Supported polling rates
 
@@ -59,19 +60,19 @@ After installation, reconnect the mouse or receiver if its desktop-session ACL d
 ### Arch Linux / CachyOS
 
 ```bash
-sudo pacman -U ./steelseries-linux-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./steelseries-linux-0.4.0-1-x86_64.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
 
 ```bash
-sudo apt install ./steelseries-linux_0.3.0-1_amd64.deb
+sudo apt install ./steelseries-linux_0.4.0-1_amd64.deb
 ```
 
 ### Fedora
 
 ```bash
-sudo dnf install ./steelseries-linux-0.3.0-1*.x86_64.rpm
+sudo dnf install ./steelseries-linux-0.4.0-1*.x86_64.rpm
 ```
 
 Package build instructions and package-content inspection commands are documented in [`PACKAGING.md`](PACKAGING.md).
@@ -113,7 +114,7 @@ target/release/steelseriesctl
 Run it directly:
 
 ```bash
-./target/release/steelseriesctl devices
+./target/release/steelseriesctl device list
 ```
 
 Or install it manually:
@@ -122,6 +123,19 @@ Or install it manually:
 sudo install -Dm755 target/release/steelseriesctl /usr/local/bin/steelseriesctl
 ```
 
+### Run the GUI from source
+
+The optional `steelseries-gui` application uses `steelseriesctl` as its only device-control interface. It discovers supported physical devices and builds its dashboard and configuration controls from `device describe` capability metadata and the current `device snapshot`. Unsupported sections and values are omitted automatically. All changes are executed through device-ID-scoped `steelseriesctl --json` commands and verified with a fresh snapshot.
+
+Build the CLI, then point the GUI at the local development binary:
+
+```bash
+cargo build -p steelseries-cli
+STEELSERIESCTL_PATH=target/debug/steelseriesctl cargo run -p steelseries-gui
+```
+
+Without `STEELSERIESCTL_PATH`, the GUI runs `steelseriesctl` from `PATH`. It communicates exclusively through the versioned JSON API and does not link to `steelseries-core`.
+
 ---
 
 ## Usage
@@ -129,7 +143,7 @@ sudo install -Dm755 target/release/steelseriesctl /usr/local/bin/steelseriesctl
 ### Detect devices
 
 ```bash
-steelseriesctl devices
+steelseriesctl device list
 ```
 
 Example:
@@ -141,9 +155,21 @@ SteelSeries devices:
     Connection: 2.4 GHz
 ```
 
+Describe the selected device and its supported limits:
+
+```bash
+steelseriesctl device describe
+```
+
+Read the complete supported state in one process:
+
+```bash
+steelseriesctl device snapshot
+```
+
 ### Select a physical device
 
-Use the device ID shown by `steelseriesctl devices`:
+Use the device ID shown by `steelseriesctl device list`:
 
 ```bash
 steelseriesctl --device 6271700431492500250 dpi get
@@ -160,7 +186,9 @@ The ID remains the same when a mouse switches between wired USB and its linked 2
 Human-readable output remains the default. Use the global `--json` flag for the stable machine-readable interface intended for scripts, frontends, and the future graphical application:
 
 ```bash
-steelseriesctl --json devices
+steelseriesctl --json device list
+steelseriesctl --json --device <ID> device describe
+steelseriesctl --json --device <ID> device snapshot
 steelseriesctl --json dpi get
 steelseriesctl --json lod get
 steelseriesctl --json polling get
@@ -178,6 +206,8 @@ Example:
 ```
 
 The JSON schema version is currently `1`.
+
+`device describe` exposes model identity and capability metadata such as valid ranges, steps, modes, and stage limits. Frontends can use this metadata to adapt to device-specific constraints without hardcoding model rules. `device snapshot` reads the selected device's complete supported state in one CLI process.
 
 Successful commands write exactly one JSON document to stdout. Runtime failures write one JSON error document to stderr and return a non-zero exit status.
 
@@ -383,7 +413,7 @@ git diff --check
 
 ### v0.4
 
-- Device information command/API
+- Device capability, description, and snapshot API
 - First separate graphical application
 - Device overview and configuration UI
 - Tray battery indicator

@@ -15,3 +15,11 @@ Description: Linux configuration CLI for supported SteelSeries devices
  SteelSeries hardware. It currently supports DPI, polling rate, battery
  status, physical-device discovery, and endpoint selection for the
  SteelSeries Aerox 3 Wireless Gen 2.
+
+Package: steelseries-linux-gui
+Architecture: any
+Depends: steelseries-linux (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Description: Graphical application for SteelSeries Linux
+ SteelSeries Linux GUI provides an optional graphical interface for the
+ steelseriesctl JSON API. Device access and validation remain in the
+ steelseries-linux backend package.

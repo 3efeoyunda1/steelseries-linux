@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40" viewBox="0 0 64 40" fill="none" role="img" aria-label="Battery 10% charging">
+  <defs>
+    <mask id="bolt-cut">
+      <rect width="64" height="40" fill="white"/>
+      <g transform="translate(11.36 3.36) scale(0.05200)">
+        <path d="M434.8 54.1C446.7 62.7 451.1 78.3 445.7 91.9L367.3 288L512 288C525.5 288 537.5 296.4 542.1 309.1C546.7 321.8 542.8 336 532.5 344.6L244.5 584.6C233.2 594 217.1 594.5 205.2 585.9C193.3 577.3 188.9 561.7 194.3 548.1L272.7 352L128 352C114.5 352 102.5 343.6 97.9 330.9C93.3 318.2 97.2 304 107.5 295.4L395.5 55.4C406.8 46 422.9 45.5 434.8 54.1z" fill="black"/>
+        <path d="M434.8 54.1C446.7 62.7 451.1 78.3 445.7 91.9L367.3 288L512 288C525.5 288 537.5 296.4 542.1 309.1C546.7 321.8 542.8 336 532.5 344.6L244.5 584.6C233.2 594 217.1 594.5 205.2 585.9C193.3 577.3 188.9 561.7 194.3 548.1L272.7 352L128 352C114.5 352 102.5 343.6 97.9 330.9C93.3 318.2 97.2 304 107.5 295.4L395.5 55.4C406.8 46 422.9 45.5 434.8 54.1z" fill="none" stroke="black" stroke-width="96.15" stroke-linejoin="round" stroke-linecap="round"/>
+      </g>
+    </mask>
+  </defs>
+  <g mask="url(#bolt-cut)">
+    <rect x="6.5" y="10.0" width="4.40" height="20.0" rx="2.50" fill="#FFFFFF"/>
+    <rect x="2.5" y="6.0" width="52.0" height="28.0" rx="5.5" fill="none" stroke="#FFFFFF" stroke-width="2.8"/>
+    <rect x="57.0" y="13.5" width="5.0" height="13.0" rx="2.0" fill="#FFFFFF"/>
+  </g>
+  <!-- Font Awesome Free v7.3.1 by Fonticons, Inc. https://fontawesome.com ; License: https://fontawesome.com/license/free -->
+  <path d="M434.8 54.1C446.7 62.7 451.1 78.3 445.7 91.9L367.3 288L512 288C525.5 288 537.5 296.4 542.1 309.1C546.7 321.8 542.8 336 532.5 344.6L244.5 584.6C233.2 594 217.1 594.5 205.2 585.9C193.3 577.3 188.9 561.7 194.3 548.1L272.7 352L128 352C114.5 352 102.5 343.6 97.9 330.9C93.3 318.2 97.2 304 107.5 295.4L395.5 55.4C406.8 46 422.9 45.5 434.8 54.1z" transform="translate(11.36 3.36) scale(0.05200)" fill="#22C55E"/>
+</svg>

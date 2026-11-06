@@ -6,7 +6,7 @@ CARGO ?= cargo
 	dh $@
 
 override_dh_auto_build:
-	$(CARGO) build --release --locked
+	$(CARGO) build --release --locked --workspace
 
 override_dh_auto_test:
 	$(CARGO) test --workspace --locked

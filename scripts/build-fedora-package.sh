@@ -25,12 +25,14 @@ mkdir -p \
 tar -czf "${rpm_topdir}/SOURCES/steelseries-linux-${version}.tar.gz" \
     --transform "s,^,steelseries-linux-${version}/," \
     -C "$repo_root" \
-    Cargo.toml Cargo.lock crates udev LICENSE README.md
+    Cargo.toml Cargo.lock crates assets udev LICENSE README.md
 
 rpmbuild --define "_topdir ${rpm_topdir}" \
     -ba "${repo_root}/fedora/steelseries-linux.spec"
 
-mkdir -p "${repo_root}/dist"
+output_dir="${repo_root}/dist/fedora"
+mkdir -p "$output_dir"
 find "${rpm_topdir}/RPMS" -type f \
-    -name "steelseries-linux-${version}-*.x86_64.rpm" \
-    -exec cp -f {} "${repo_root}/dist/" \;
+    \( -name "steelseries-linux-${version}-*.x86_64.rpm" \
+       -o -name "steelseries-linux-gui-${version}-*.x86_64.rpm" \) \
+    -exec cp -f {} "$output_dir/" \;

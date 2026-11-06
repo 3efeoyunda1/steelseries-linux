@@ -8,10 +8,12 @@ use hidapi::{HidApi, HidDevice};
 use thiserror::Error;
 
 use crate::device::{
-    AutoLowPowerThreshold, BatteryStatus, ConnectionType, DeviceCapabilities, DeviceIdentity,
-    DpiCapabilities, DpiConfig, DpiStage, LiftOffDistance, LowPowerPollingRate, PhysicalDevice,
-    PollingCapabilities, PollingConfig, PollingRate, PowerCapabilities, PowerConfig,
-    ScrollJumpCapabilities, ScrollJumpConfig, SleepTimer, WirelessFeatureCapabilities,
+    AutoLowPowerThreshold, BatteryCapabilities, BatteryStatus, ConnectionType, DeviceCapabilities,
+    DeviceIdentity, DeviceModel, DpiCapabilities, DpiConfig, DpiStage, FeatureCapabilities,
+    LiftOffDistance, LiftOffDistanceCapabilities, LiftOffDistanceValueCapability,
+    LowPowerPollingRate, PhysicalDevice, PollingCapabilities, PollingConfig, PollingRate,
+    PowerCapabilities, PowerConfig, RangeCapabilities, RecommendedRange, ScrollJumpCapabilities,
+    ScrollJumpConfig, SleepTimer, SleepTimerCapabilities, WirelessFeatureCapabilities,
     WirelessFeatures,
 };
 
@@ -68,6 +70,7 @@ struct EndpointPair<T> {
 impl<T> EndpointPair<T> {
     fn physical_device(&self) -> PhysicalDevice {
         PhysicalDevice {
+            model: DeviceModel::Aerox3WirelessGen2,
             identity: self.identity.clone(),
             active_connection: if self.wired.is_some() {
                 ConnectionType::Wired
@@ -159,7 +162,11 @@ pub enum Error {
     #[error("DPI configuration must contain between 1 and 5 stages (received {0})")]
     InvalidDpiStageCount(usize),
     #[error("{axis}-axis DPI {value} is invalid; DPI must be between 50 and 26000 in steps of 50")]
-    InvalidDpiValue { axis: &'static str, value: u16 },
+    InvalidDpiValue {
+        axis: &'static str,
+        value: u16,
+        stage: Option<usize>,
+    },
     #[error("active DPI stage index {active} is outside the {stage_count} configured stages")]
     InvalidDpiActiveIndex { active: usize, stage_count: usize },
     #[error("stage ID {0} is outside the supported range 1..=5")]
@@ -174,8 +181,8 @@ pub enum Error {
     UnknownPollingCode(u8),
     #[error("unsupported polling rate {0} Hz; expected 125, 250, 500, 1000, 2000, or 4000 Hz")]
     UnsupportedPollingRate(u16),
-    #[error("wired polling rate supports a maximum of 1000 Hz")]
-    WiredPollingTooHigh,
+    #[error("wired polling rate {value} Hz is not supported; expected 125, 250, 500, or 1000 Hz")]
+    WiredPollingTooHigh { value: u16 },
     #[error("unknown low-power polling protocol code 0x{0:02x}")]
     UnknownLowPowerPollingCode(u8),
     #[error("unsupported low-power polling rate {0} Hz; expected 125, 250, or 500 Hz")]
@@ -318,17 +325,37 @@ impl From<LiftOffDistance> for u8 {
 
 pub struct Aerox3WirelessGen2 {
     device: HidDevice,
+    physical_device: Option<PhysicalDevice>,
 }
 
 impl Aerox3WirelessGen2 {
     pub const CAPABILITIES: DeviceCapabilities = DeviceCapabilities {
         dpi: DpiCapabilities {
+            supported: true,
             min: 50,
             max: 26_000,
             step: 50,
             max_stages: 5,
+            independent_axes: true,
+        },
+        lod: LiftOffDistanceCapabilities {
+            supported: true,
+            per_stage: true,
+            values: &[
+                LiftOffDistanceValueCapability {
+                    value: LiftOffDistance::Low,
+                    label: "Low",
+                    distance_mm: 1,
+                },
+                LiftOffDistanceValueCapability {
+                    value: LiftOffDistance::High,
+                    label: "High",
+                    distance_mm: 2,
+                },
+            ],
         },
         polling: PollingCapabilities {
+            supported: true,
             wireless: &[
                 PollingRate::Hz125,
                 PollingRate::Hz250,
@@ -344,26 +371,42 @@ impl Aerox3WirelessGen2 {
                 PollingRate::Hz1000,
             ],
         },
+        battery: BatteryCapabilities {
+            supported: true,
+            charging_state: true,
+        },
         power: PowerCapabilities {
+            supported: true,
+            low_power_mode: true,
             low_power_polling: &[
                 LowPowerPollingRate::Hz125,
                 LowPowerPollingRate::Hz250,
                 LowPowerPollingRate::Hz500,
             ],
-            auto_low_power_threshold_min: 5,
-            auto_low_power_threshold_max: 25,
-            sleep_timer_min_minutes: 1,
-            sleep_timer_max_minutes: 71_582,
+            sleep_timer: SleepTimerCapabilities {
+                min: 1,
+                max: 71_582,
+                step: 1,
+                recommended_range: Some(RecommendedRange { min: 5, max: 20 }),
+            },
+            auto_low_power_supported: true,
+            auto_low_power_threshold: RangeCapabilities {
+                min: 5,
+                max: 25,
+                step: 1,
+            },
         },
         wireless_features: WirelessFeatureCapabilities {
-            wireless_stability: true,
-            bluetooth_smoothing: true,
+            wireless_stability: FeatureCapabilities { supported: true },
+            bluetooth_smoothing: FeatureCapabilities { supported: true },
         },
         scroll_jump: ScrollJumpCapabilities {
             supported: true,
-            delay_min_ms: 100,
-            delay_max_ms: 1_500,
-            delay_step_ms: 100,
+            delay: RangeCapabilities {
+                min: 100,
+                max: 1_500,
+                step: 100,
+            },
         },
     };
 
@@ -388,9 +431,23 @@ impl Aerox3WirelessGen2 {
         }
 
         let pair = select_endpoint_pair(discovery.pairs, requested_identity)?;
+        let physical_device = pair.physical_device();
         Ok(Self {
             device: pair.into_selected_endpoint(),
+            physical_device: Some(physical_device),
         })
+    }
+
+    #[must_use]
+    pub const fn capabilities() -> &'static DeviceCapabilities {
+        &Self::CAPABILITIES
+    }
+
+    #[must_use]
+    pub fn physical_device(&self) -> &PhysicalDevice {
+        self.physical_device
+            .as_ref()
+            .expect("selected devices always include physical-device metadata")
     }
 
     pub fn discover() -> Result<Vec<PhysicalDevice>, Error> {
@@ -446,7 +503,10 @@ impl Aerox3WirelessGen2 {
                     continue;
                 }
             };
-            let endpoint = Self { device };
+            let endpoint = Self {
+                device,
+                physical_device: None,
+            };
 
             if kind == EndpointKind::Receiver2_4Ghz {
                 match endpoint.get_receiver_link_active() {
@@ -978,20 +1038,20 @@ fn validate_dpi_config(config: &DpiConfig) -> Result<(), Error> {
             stage_count: config.stages.len(),
         });
     }
-    for stage in &config.stages {
-        validate_dpi_value("X", stage.x)?;
-        validate_dpi_value("Y", stage.y)?;
+    for (index, stage) in config.stages.iter().enumerate() {
+        validate_dpi_value("X", stage.x, Some(index + 1))?;
+        validate_dpi_value("Y", stage.y, Some(index + 1))?;
     }
     Ok(())
 }
 
-fn validate_dpi_value(axis: &'static str, value: u16) -> Result<(), Error> {
+fn validate_dpi_value(axis: &'static str, value: u16, stage: Option<usize>) -> Result<(), Error> {
     let capabilities = Aerox3WirelessGen2::CAPABILITIES.dpi;
     if value < capabilities.min
         || value > capabilities.max
         || !value.is_multiple_of(capabilities.step)
     {
-        return Err(Error::InvalidDpiValue { axis, value });
+        return Err(Error::InvalidDpiValue { axis, value, stage });
     }
     Ok(())
 }
@@ -1001,9 +1061,9 @@ pub fn validate_dpi_values(dpis: &[(u16, u16)]) -> Result<(), Error> {
     if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&dpis.len()) {
         return Err(Error::InvalidDpiStageCount(dpis.len()));
     }
-    for &(x, y) in dpis {
-        validate_dpi_value("X", x)?;
-        validate_dpi_value("Y", y)?;
+    for (index, &(x, y)) in dpis.iter().enumerate() {
+        validate_dpi_value("X", x, Some(index + 1))?;
+        validate_dpi_value("Y", y, Some(index + 1))?;
     }
     Ok(())
 }
@@ -1288,8 +1348,8 @@ pub fn scroll_jump_with_delay(
 
 pub fn validate_scroll_jump_delay(delay_ms: u16) -> Result<(), Error> {
     let capabilities = Aerox3WirelessGen2::CAPABILITIES.scroll_jump;
-    if !(capabilities.delay_min_ms..=capabilities.delay_max_ms).contains(&delay_ms)
-        || !delay_ms.is_multiple_of(capabilities.delay_step_ms)
+    if !(capabilities.delay.min..=capabilities.delay.max).contains(&delay_ms)
+        || !delay_ms.is_multiple_of(capabilities.delay.step)
     {
         return Err(Error::InvalidScrollJumpDelay(delay_ms));
     }
@@ -1303,7 +1363,7 @@ pub fn auto_low_power_threshold(percent: u8) -> Result<AutoLowPowerThreshold, Er
 
 fn validate_auto_low_power_threshold(percent: u8) -> Result<(), Error> {
     let capabilities = Aerox3WirelessGen2::CAPABILITIES.power;
-    if !(capabilities.auto_low_power_threshold_min..=capabilities.auto_low_power_threshold_max)
+    if !(capabilities.auto_low_power_threshold.min..=capabilities.auto_low_power_threshold.max)
         .contains(&percent)
     {
         return Err(Error::InvalidAutoLowPowerThreshold(percent));
@@ -1313,10 +1373,10 @@ fn validate_auto_low_power_threshold(percent: u8) -> Result<(), Error> {
 
 pub fn sleep_timer_from_minutes(minutes: u64) -> Result<SleepTimer, Error> {
     let capabilities = Aerox3WirelessGen2::CAPABILITIES.power;
-    if minutes < capabilities.sleep_timer_min_minutes {
+    if minutes < capabilities.sleep_timer.min {
         return Err(Error::SleepTimerZero);
     }
-    if minutes > capabilities.sleep_timer_max_minutes {
+    if minutes > capabilities.sleep_timer.max {
         return Err(Error::SleepTimerTooLarge);
     }
     let milliseconds = minutes
@@ -1427,7 +1487,7 @@ pub fn validate_wired_polling_rate(rate: PollingRate) -> Result<(), Error> {
     {
         Ok(())
     } else {
-        Err(Error::WiredPollingTooHigh)
+        Err(Error::WiredPollingTooHigh { value: rate.hz() })
     }
 }
 
@@ -1664,6 +1724,14 @@ mod tests {
 
     #[test]
     fn validates_aerox_3_wireless_gen2_dpi_capabilities() {
+        let capabilities = Aerox3WirelessGen2::capabilities();
+        assert!(capabilities.dpi.supported);
+        assert_eq!(capabilities.dpi.min, 50);
+        assert_eq!(capabilities.dpi.max, 26_000);
+        assert_eq!(capabilities.dpi.step, 50);
+        assert_eq!(capabilities.dpi.max_stages, 5);
+        assert!(capabilities.dpi.independent_axes);
+
         for value in [50, 400, 1450, 26_000] {
             validate_dpi_values(&[(value, value)]).unwrap();
         }
@@ -1671,9 +1739,36 @@ mod tests {
         for value in [49, 51, 1451, 26_050] {
             assert!(matches!(
                 validate_dpi_values(&[(value, 800)]),
-                Err(Error::InvalidDpiValue { axis: "X", value: invalid }) if invalid == value
+                Err(Error::InvalidDpiValue { axis: "X", value: invalid, .. }) if invalid == value
             ));
         }
+    }
+
+    #[test]
+    fn capabilities_are_the_validation_source_of_truth() {
+        let capabilities = Aerox3WirelessGen2::capabilities();
+        validate_dpi_values(&[(capabilities.dpi.min, capabilities.dpi.max)]).unwrap();
+        assert!(validate_dpi_values(&vec![(400, 400); capabilities.dpi.max_stages]).is_ok());
+        assert!(matches!(
+            validate_dpi_values(&vec![(400, 400); capabilities.dpi.max_stages + 1]),
+            Err(Error::InvalidDpiStageCount(_))
+        ));
+
+        for rate in capabilities.polling.wired {
+            validate_wired_polling_rate(*rate).unwrap();
+        }
+        for delay in [
+            capabilities.scroll_jump.delay.min,
+            capabilities.scroll_jump.delay.max,
+        ] {
+            validate_scroll_jump_delay(delay).unwrap();
+        }
+        assert_eq!(capabilities.lod.values.len(), 2);
+        assert_eq!(capabilities.power.sleep_timer.max, 71_582);
+        assert_eq!(
+            capabilities.power.sleep_timer.recommended_range,
+            Some(RecommendedRange { min: 5, max: 20 })
+        );
     }
 
     #[test]
@@ -1683,14 +1778,16 @@ mod tests {
             validate_dpi_values(&[(49, 800)]),
             Err(Error::InvalidDpiValue {
                 axis: "X",
-                value: 49
+                value: 49,
+                ..
             })
         ));
         assert!(matches!(
             validate_dpi_values(&[(800, 26_050)]),
             Err(Error::InvalidDpiValue {
                 axis: "Y",
-                value: 26_050
+                value: 26_050,
+                ..
             })
         ));
     }
@@ -2079,11 +2176,11 @@ mod tests {
         };
         assert!(matches!(
             polling_with_wired(current, PollingRate::Hz2000),
-            Err(Error::WiredPollingTooHigh)
+            Err(Error::WiredPollingTooHigh { value: 2_000 })
         ));
         assert!(matches!(
             polling_with_wired(current, PollingRate::Hz4000),
-            Err(Error::WiredPollingTooHigh)
+            Err(Error::WiredPollingTooHigh { value: 4_000 })
         ));
     }
 
