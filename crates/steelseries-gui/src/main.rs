@@ -5,10 +5,12 @@ mod dpi_curve;
 mod monitor;
 mod runtime;
 mod settings;
+mod single_instance;
 mod tray;
 mod window_lifecycle;
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     env,
     rc::Rc,
@@ -133,24 +135,73 @@ struct MutationContext {
     busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
+thread_local! {
+    // Slint components live on the event-loop thread. Keep the same component
+    // after the first activation so hiding to the tray preserves its state.
+    static MAIN_WINDOW: RefCell<Option<AppWindow>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+struct WindowContext {
+    client: CliClient,
+    monitor: MonitorController,
+    tray: Arc<Mutex<TrayController>>,
+    lifecycle: Arc<Mutex<WindowLifecycle>>,
+    latest_event: Arc<Mutex<Option<MonitorEvent>>>,
+    settings_error: Option<String>,
+}
+
 fn main() -> Result<(), slint::PlatformError> {
-    let ui = AppWindow::new()?;
-    normalize_window(&ui, WINDOW_WIDTH, WINDOW_HEIGHT);
+    let launch_from_autostart = env::args_os().any(|argument| argument == "--autostart");
+    let Some(instance_socket) = single_instance::claim(!launch_from_autostart)
+        .map_err(|error| slint::PlatformError::Other(format!("GUI activation failed: {error}")))?
+    else {
+        return Ok(());
+    };
+    // Initialize the platform without creating a window, then set its identity.
+    slint::BackendSelector::new().select()?;
+    slint::set_xdg_app_id("steelseries-linux-gui")?;
     let client = CliClient::from_environment();
     let config_path = settings_path();
-    let initial_settings = GuiSettings::load(&config_path);
-    let launch_from_autostart = env::args_os().any(|argument| argument == "--autostart");
-    let show_initially =
-        initial_window_visible(launch_from_autostart, initial_settings.tray_enabled);
+    let initial_settings =
+        settings_for_launch(GuiSettings::load(&config_path), launch_from_autostart);
+    let settings_error =
+        settings::migrate_autostart(&autostart_path(), initial_settings.start_at_login)
+            .err()
+            .map(|error| {
+                eprintln!("steelseries-linux-gui: could not migrate autostart entry: {error}");
+                format!("Could not update Start at login: {error}")
+            });
+    let show_initially = initial_window_visible(launch_from_autostart);
     let window_lifecycle = Arc::new(Mutex::new(WindowLifecycle::new(show_initially)));
     let (tray_action_sender, tray_action_receiver) = mpsc::channel();
+    let activation_sender = tray_action_sender.clone();
+    thread::spawn(move || {
+        let mut message = [0; 16];
+        loop {
+            match instance_socket.recv(&mut message) {
+                Ok(size) if &message[..size] == b"open" => {
+                    if activation_sender.send(TrayAction::Open).is_err() {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    eprintln!("GUI activation listener failed: {error}");
+                    break;
+                }
+            }
+        }
+    });
     let tray = Arc::new(Mutex::new(TrayController::new(tray_action_sender)));
     if let Ok(mut tray) = tray.lock() {
         tray.set_icon_theme(initial_settings.tray_icon_theme);
         tray.set_enabled(initial_settings.tray_enabled);
     }
 
-    let monitor_ui = ui.as_weak();
+    let latest_event = Arc::new(Mutex::new(None));
+    let monitor_latest_event = Arc::clone(&latest_event);
     let monitor_tray = Arc::clone(&tray);
     let monitor = MonitorController::start(
         client.clone(),
@@ -158,55 +209,39 @@ fn main() -> Result<(), slint::PlatformError> {
         config_path,
         move |event| {
             update_tray(&monitor_tray, &event);
-            let _ = monitor_ui.upgrade_in_event_loop(move |ui| apply_monitor_event(&ui, event));
+            if let Ok(mut latest) = monitor_latest_event.lock() {
+                *latest = Some(event.clone());
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                MAIN_WINDOW.with_borrow(|window| {
+                    if let Some(ui) = window {
+                        apply_monitor_event(ui, event);
+                    }
+                });
+            });
         },
     );
-    let dashboard_generation = Arc::new(AtomicU64::new(0));
-    let description = Arc::new(Mutex::new(None));
-    let mutation_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let context = WindowContext {
+        client,
+        monitor,
+        tray,
+        lifecycle: window_lifecycle,
+        latest_event,
+        settings_error,
+    };
+    if show_initially {
+        open_main_window(&context)?;
+    }
 
-    wire_callbacks(
-        &ui,
-        &client,
-        &dashboard_generation,
-        &description,
-        &mutation_busy,
-        &monitor,
-        &tray,
-        &window_lifecycle,
-    );
-
-    let close_settings = Arc::clone(&monitor.settings);
-    let close_lifecycle = Arc::clone(&window_lifecycle);
-    ui.window().on_close_requested(move || {
-        if close_settings
-            .lock()
-            .is_ok_and(|settings| settings.tray_enabled)
-        {
-            if let Ok(mut lifecycle) = close_lifecycle.lock() {
-                lifecycle.hide();
-            }
-            slint::CloseRequestResponse::HideWindow
-        } else {
-            let _ = slint::quit_event_loop();
-            slint::CloseRequestResponse::HideWindow
-        }
-    });
-
-    let tray_ui = ui.as_weak();
-    let tray_lifecycle = Arc::clone(&window_lifecycle);
     thread::spawn(move || {
         while let Ok(action) = tray_action_receiver.recv() {
             match action {
                 TrayAction::Open => {
-                    let size = tray_lifecycle
-                        .lock()
-                        .map_or((WINDOW_WIDTH, WINDOW_HEIGHT), |mut lifecycle| {
-                            lifecycle.restore()
-                        });
-                    let _ = tray_ui.upgrade_in_event_loop(move |ui| {
-                        normalize_window(&ui, size.0, size.1);
-                        let _ = ui.show();
+                    let context = context.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Err(error) = open_main_window(&context) {
+                            eprintln!("Could not restore GUI: {error}");
+                        }
                     });
                 }
                 TrayAction::Quit => {
@@ -218,15 +253,73 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
     });
-
-    if show_initially {
-        ui.show()?;
-    }
     slint::run_event_loop_until_quit()
 }
 
-const fn initial_window_visible(launch_from_autostart: bool, tray_enabled: bool) -> bool {
-    !launch_from_autostart || !tray_enabled
+fn open_main_window(context: &WindowContext) -> Result<(), slint::PlatformError> {
+    MAIN_WINDOW.with_borrow_mut(|window| {
+        if window.is_none() {
+            let ui = AppWindow::new()?;
+            window_lifecycle::install_native_policy(ui.window());
+            if let Some(error) = &context.settings_error {
+                ui.set_settings_error(error.as_str().into());
+            }
+            wire_callbacks(
+                &ui,
+                &context.client,
+                &Arc::new(AtomicU64::new(0)),
+                &Arc::new(Mutex::new(None)),
+                &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                &context.monitor,
+                &context.tray,
+                &context.lifecycle,
+            );
+            let close_settings = Arc::clone(&context.monitor.settings);
+            let close_lifecycle = Arc::clone(&context.lifecycle);
+            ui.window().on_close_requested(move || {
+                if close_settings
+                    .lock()
+                    .is_ok_and(|settings| settings.tray_enabled)
+                {
+                    if let Ok(mut lifecycle) = close_lifecycle.lock() {
+                        lifecycle.hide();
+                    }
+                } else {
+                    let _ = slint::quit_event_loop();
+                }
+                slint::CloseRequestResponse::HideWindow
+            });
+            if let Ok(latest) = context.latest_event.lock()
+                && let Some(event) = latest.as_ref()
+            {
+                apply_monitor_event(&ui, event.clone());
+            }
+            *window = Some(ui);
+        }
+        let ui = window.as_ref().expect("window initialized above");
+        let size = context
+            .lifecycle
+            .lock()
+            .map_or((WINDOW_WIDTH, WINDOW_HEIGHT), |mut lifecycle| {
+                lifecycle.restore()
+            });
+        normalize_window(ui, size.0, size.1);
+        ui.show()?;
+        window_lifecycle::restore_native_window(ui.window());
+        Ok(())
+    })
+}
+
+const fn initial_window_visible(launch_from_autostart: bool) -> bool {
+    !launch_from_autostart
+}
+
+fn settings_for_launch(mut settings: GuiSettings, launch_from_autostart: bool) -> GuiSettings {
+    // A hidden autostart needs a tray entry so the user can reopen or quit it.
+    if launch_from_autostart {
+        settings.tray_enabled = true;
+    }
+    settings
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -991,7 +1084,7 @@ fn start_mutation(ui: slint::Weak<AppWindow>, context: MutationContext, action: 
     thread::spawn(move || {
         let result = action.execute_and_refresh(&context.client, &device_id);
         if let Err(failure) = &result {
-            eprintln!("steelseries-gui: {}", failure.error);
+            eprintln!("steelseries-linux-gui: {}", failure.error);
         }
         let description = context
             .description
@@ -1290,7 +1383,7 @@ fn start_dashboard_load(
                 .map(|snapshot| (description, snapshot))
         });
         if let Err(error) = &result {
-            eprintln!("steelseries-gui: {error}");
+            eprintln!("steelseries-linux-gui: {error}");
         }
 
         let callback_generation = Arc::clone(&generation);
@@ -1634,11 +1727,23 @@ mod tests {
     }
 
     #[test]
-    fn autostart_launch_is_hidden_only_when_tray_is_enabled() {
-        assert!(initial_window_visible(false, true));
-        assert!(initial_window_visible(false, false));
-        assert!(!initial_window_visible(true, true));
-        assert!(initial_window_visible(true, false));
+    fn autostart_launch_is_hidden_and_enables_tray() {
+        let settings = GuiSettings {
+            tray_enabled: false,
+            ..GuiSettings::default()
+        };
+        assert!(!initial_window_visible(true));
+        assert!(settings_for_launch(settings, true).tray_enabled);
+    }
+
+    #[test]
+    fn normal_launch_shows_window_and_preserves_tray_preference() {
+        let settings = GuiSettings {
+            tray_enabled: false,
+            ..GuiSettings::default()
+        };
+        assert!(initial_window_visible(false));
+        assert!(!settings_for_launch(settings, false).tray_enabled);
     }
 
     #[test]

@@ -17,6 +17,58 @@ pub const WINDOW_POLICY: WindowPolicy = WindowPolicy {
 pub const WINDOW_WIDTH: u32 = WINDOW_POLICY.width;
 pub const WINDOW_HEIGHT: u32 = WINDOW_POLICY.height;
 
+use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
+
+impl WindowPolicy {
+    fn apply_native(self, window: &winit::window::Window) {
+        let size = winit::dpi::LogicalSize::new(self.width, self.height);
+        window.set_resizable(self.resizable);
+        window.set_enabled_buttons(if self.maximizable {
+            winit::window::WindowButtons::all()
+        } else {
+            winit::window::WindowButtons::CLOSE | winit::window::WindowButtons::MINIMIZE
+        });
+        window.set_min_inner_size(Some(size));
+        window.set_max_inner_size((!self.resizable).then_some(size));
+        if !self.fullscreen {
+            window.set_fullscreen(None);
+        }
+        if !self.maximizable {
+            window.set_maximized(false);
+        }
+        let _ = window.request_inner_size(size);
+    }
+}
+
+/// Wayland hide destroys the native window, even though AppWindow survives.
+/// Apply constraints to each new native WindowId, independently of Slint's
+/// cached layout constraints. Do not keep an Arc to the native window alive.
+pub fn install_native_policy(window: &slint::Window) {
+    let mut applied_window = None;
+    window.on_winit_window_event(move |window, event| {
+        window.with_winit_window(|native| {
+            if applied_window != Some(native.id()) {
+                WINDOW_POLICY.apply_native(native);
+                applied_window = Some(native.id());
+            }
+        });
+        // Wayland can reuse a WindowId after close-to-tray recreates the
+        // native window. Force the constraints to be applied on its return.
+        if matches!(event, winit::event::WindowEvent::CloseRequested) {
+            applied_window = None;
+        }
+        EventResult::Propagate
+    });
+}
+
+pub fn restore_native_window(window: &slint::Window) {
+    window.with_winit_window(|native| {
+        WINDOW_POLICY.apply_native(native);
+        native.set_minimized(false);
+        native.focus_window();
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowLifecycle {
     instance_count: u8,

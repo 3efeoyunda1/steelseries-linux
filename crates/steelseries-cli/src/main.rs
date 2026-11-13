@@ -522,7 +522,7 @@ fn run_device_list() -> Result<CommandOutput, Error> {
     let devices = Aerox3WirelessGen2::discover()?;
     let mut human = "SteelSeries devices:".to_owned();
     if devices.is_empty() {
-        human.push_str("\n  No usable Aerox 3 Wireless Gen 2 device found.");
+        human.push_str("\n  No supported SteelSeries devices found.");
     }
     for (index, device) in devices.iter().enumerate() {
         if index > 0 {

@@ -1,0 +1,36 @@
+import { ComboBox } from "std-widgets.slint";
+import { ControlMetrics } from "../theme.slint";
+
+export component SelectControl inherits HorizontalLayout {
+    in property <string> label;
+    in property <length> label-min-width: 0px;
+    in property <[string]> options;
+    in property <int> current-index;
+    in property <bool> enabled: true;
+    callback selected(int);
+    min-height: 34px;
+    vertical-stretch: 0;
+    spacing: 12px;
+    Text {
+        text: root.label;
+        min-width: root.label-min-width;
+        // A nonzero preferred width prevents word-wrapped labels from inflating
+        // the scroll content height before the row has its final width.
+        preferred-width: max(root.label-min-width, ControlMetrics.select-width);
+        horizontal-stretch: 1;
+        color: #a0a0a0;
+        font-size: 13px;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+    // Slint's standard popup is the same width as the control; long list items may be elided too.
+    selector := ComboBox {
+        width: ControlMetrics.select-width;
+        horizontal-stretch: 0;
+        model: root.options;
+        current-index: root.current-index;
+        enabled: root.enabled;
+        selected => { root.selected(self.current-index); }
+    }
+}
+

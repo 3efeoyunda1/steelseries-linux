@@ -1,8 +1,12 @@
 # Rust
 /target/
 
-# Final release artifacts
+# Package build artifacts
 /dist/
+
+# Local Docker packaging tools
+/scripts/docker/
+/scripts/build-all.sh
 
 # Arch makepkg working/output directories
 /arch/pkg/

@@ -10,14 +10,14 @@ publish = false
 build = "build.rs"
 
 [[bin]]
-name = "steelseries-gui"
+name = "steelseries-linux-gui"
 path = "src/main.rs"
 
 [dependencies]
 ksni.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-slint.workspace = true
+slint = { workspace = true, features = ["unstable-winit-030"] }
 thiserror.workspace = true
 
 [build-dependencies]

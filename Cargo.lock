@@ -3767,6 +3767,7 @@ checksum = "15e477d5ff6fec20909100ff8f7062432ebfbda7a62a0f37d0252aa126f38c83"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
@@ -3947,7 +3948,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "steelseries-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "clap",
  "serde",
@@ -3957,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "steelseries-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "hidapi",
  "thiserror 2.0.21",
@@ -3965,7 +3966,7 @@ dependencies = [
 
 [[package]]
 name = "steelseries-gui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ksni",
  "serde",

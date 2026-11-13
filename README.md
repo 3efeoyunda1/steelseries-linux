@@ -16,424 +16,129 @@ Bluetooth control is currently not supported.
 
 ## Features
 
-### Aerox 3 Wireless Gen 2
-
-- Physical-device detection and deduplication
-- Automatic wired USB / linked 2.4 GHz receiver selection
-- Stable device identity across wired and 2.4 GHz connections
-- Read and configure 1–5 DPI stages
-- Independent X/Y DPI values
-- Select the active DPI stage
-- Read and configure per-stage lift-off distance (LOD)
-- Read and configure wired and 2.4 GHz polling rates
-- Read battery percentage and charging state
-- Power-management controls
-  - Low Power Mode
-  - Low Power polling rate
-  - Sleep Timer
-  - Auto Low Power
-  - Auto Low Power battery threshold
-- Wireless Stability Enhancement
-- Bluetooth Smoothing
-- Scroll Jump Protection with configurable delay
-- Persistent configuration writes
-- Machine-readable JSON output for scripts and frontends
-- Optional lightweight Slint device dashboard with capability-driven configuration controls
-
-### Supported polling rates
-
-| Connection | Supported rates |
-| --- | --- |
-| 2.4 GHz wireless | 125, 250, 500, 1000, 2000, 4000 Hz |
-| Wired | 125, 250, 500, 1000 Hz |
-
-The CLI identifies physical mice using the device identity returned by the mouse. When the same mouse is visible through both wired USB and its linked 2.4 GHz receiver, it is listed once and the wired endpoint is preferred automatically. A receiver without an active 2.4 GHz mouse link is not used for control.
-
----
+- **DPI Control** - Adjust mouse sensitivity, configure DPI stages, and customize X/Y axes independently.
+- **Polling Rate** - Configure how frequently the mouse reports its position.
+- **Lift-off Distance** - Adjust the height at which the mouse stops tracking.
+- **Battery Status** - Monitor battery level and charging status from the system tray.
+- **Power Management** - Configure sleep timers and automatic power-saving settings.
+- **Wireless Stability** - Enable or disable wireless stability enhancement.
+- **Bluetooth Smoothing** - Toggle Bluetooth movement smoothing.
+- **Scroll Jump Protection** - Prevent accidental scroll jumps with an adjustable delay.
+- **Device Detection** - Automatically detect supported mice and connection changes.
+- **Battery Notifications (Coming Soon)** - Get notified when the battery is low or critically low.
 
 ## Installation
 
-Native packages install `steelseriesctl` and the required udev permissions automatically. Package users do not need to run the source-tree udev installation script.
+Download the latest CLI and GUI packages from [GitHub Releases](https://github.com/3efeoyunda1/steelseries-linux/releases).
 
-After installation, reconnect the mouse or receiver if its desktop-session ACL does not update immediately.
+Install both packages for your distribution.
 
 ### Arch Linux / CachyOS
 
 ```bash
-sudo pacman -U ./steelseries-linux-0.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U \
+  ./steelseries-linux-0.4.1-1-x86_64.pkg.tar.zst \
+  ./steelseries-linux-gui-0.4.1-1-x86_64.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
 
 ```bash
-sudo apt install ./steelseries-linux_0.4.0-1_amd64.deb
+sudo apt install \
+  ./steelseries-linux_0.4.1-1_amd64.deb \
+  ./steelseries-linux-gui_0.4.1-1_amd64.deb
 ```
 
 ### Fedora
 
 ```bash
-sudo dnf install ./steelseries-linux-0.4.0-1*.x86_64.rpm
+sudo dnf install \
+  ./steelseries-linux-0.4.1-1.fc45.x86_64 \
+  ./steelseries-linux-gui-0.4.1-1.fc45.x86_64
 ```
 
-Package build instructions and package-content inspection commands are documented in [`PACKAGING.md`](PACKAGING.md).
+The `steelseries-linux` package provides the CLI (`steelseriesctl`) and required udev rules. The `steelseries-linux-gui` package provides the graphical application and depends on the CLI package.
 
-### Build from source
-
-Install the required packages:
-
-```bash
-sudo pacman -S --needed base-devel rustup pkgconf hidapi libusb
-rustup default stable
-```
-
-Clone and build:
-
-```bash
-git clone https://github.com/3efeoyunda1/steelseries-linux.git
-cd steelseries-linux
-
-cargo build --release --locked
-```
-
-Source/development users must install the included systemd-logind/uaccess rules separately:
-
-```bash
-sudo ./scripts/install-udev-rules.sh
-```
-
-This installs `udev/70-steelseries-linux.rules` as `/usr/lib/udev/rules.d/70-steelseries-linux.rules` and reloads udev.
-
-Reconnect already attached mouse and receiver endpoints if necessary. Run `steelseriesctl` as the normal desktop user, not with `sudo`.
-
-The binary is created at:
-
-```text
-target/release/steelseriesctl
-```
-
-Run it directly:
-
-```bash
-./target/release/steelseriesctl device list
-```
-
-Or install it manually:
-
-```bash
-sudo install -Dm755 target/release/steelseriesctl /usr/local/bin/steelseriesctl
-```
-
-### Run the GUI from source
-
-The optional `steelseries-gui` application uses `steelseriesctl` as its only device-control interface. It discovers supported physical devices and builds its dashboard and configuration controls from `device describe` capability metadata and the current `device snapshot`. Unsupported sections and values are omitted automatically. All changes are executed through device-ID-scoped `steelseriesctl --json` commands and verified with a fresh snapshot.
-
-Build the CLI, then point the GUI at the local development binary:
-
-```bash
-cargo build -p steelseries-cli
-STEELSERIESCTL_PATH=target/debug/steelseriesctl cargo run -p steelseries-gui
-```
-
-Without `STEELSERIESCTL_PATH`, the GUI runs `steelseriesctl` from `PATH`. It communicates exclusively through the versioned JSON API and does not link to `steelseries-core`.
-
----
+For native package building and inspection instructions, see [PACKAGING.md](PACKAGING.md).
 
 ## Usage
 
-### Detect devices
-
 ```bash
+# Show available commands
+steelseriesctl --help
+
+# List connected devices
 steelseriesctl device list
-```
 
-Example:
-
-```text
-SteelSeries devices:
-  Aerox 3 Wireless Gen 2
-    ID: 6271700431492500250
-    Connection: 2.4 GHz
-```
-
-Describe the selected device and its supported limits:
-
-```bash
+# Show device information and supported features
 steelseriesctl device describe
-```
 
-Read the complete supported state in one process:
-
-```bash
-steelseriesctl device snapshot
-```
-
-### Select a physical device
-
-Use the device ID shown by `steelseriesctl device list`:
-
-```bash
-steelseriesctl --device 6271700431492500250 dpi get
-```
-
-`--device` (or `-d`) is optional when exactly one usable supported mouse is connected and required when multiple supported physical mice are connected.
-
-The ID remains the same when a mouse switches between wired USB and its linked 2.4 GHz receiver because both endpoints are grouped by device identity.
-
----
-
-## JSON output
-
-Human-readable output remains the default. Use the global `--json` flag for the stable machine-readable interface intended for scripts, frontends, and the future graphical application:
-
-```bash
-steelseriesctl --json device list
-steelseriesctl --json --device <ID> device describe
-steelseriesctl --json --device <ID> device snapshot
-steelseriesctl --json dpi get
-steelseriesctl --json lod get
-steelseriesctl --json polling get
-steelseriesctl --json battery get
-steelseriesctl --json power get
-steelseriesctl --json wireless-stability get
-steelseriesctl --json bluetooth-smoothing get
-steelseriesctl --json scroll-jump get
-```
-
-Example:
-
-```json
-{"schema_version":1,"ok":true,"command":"scroll-jump.get","data":{"enabled":true,"delay_ms":500}}
-```
-
-The JSON schema version is currently `1`.
-
-`device describe` exposes model identity and capability metadata such as valid ranges, steps, modes, and stage limits. Frontends can use this metadata to adapt to device-specific constraints without hardcoding model rules. `device snapshot` reads the selected device's complete supported state in one CLI process.
-
-Successful commands write exactly one JSON document to stdout. Runtime failures write one JSON error document to stderr and return a non-zero exit status.
-
----
-
-## DPI
-
-Read the current DPI configuration:
-
-```bash
+# Get current DPI settings
 steelseriesctl dpi get
-```
 
-Set DPI stages:
-
-```bash
+# Configure DPI stages
 steelseriesctl dpi set 400 800 1600
-steelseriesctl dpi set 400 800x1600 3200
-```
 
-Up to 5 stages are supported.
-
-A single value applies to both X and Y axes. Use `XxY`, for example `800x1600`, to configure the axes independently. Uppercase `X` is also accepted as input.
-
-Aerox 3 Wireless Gen 2 values must be between 50 and 26000 DPI in steps of 50 on each axis.
-
-Select an existing DPI stage:
-
-```bash
+# Switch to a DPI stage
 steelseriesctl dpi use 2
-```
 
-`dpi use` selects by the one-based stage ID shown by `dpi get`, not by DPI value.
-
----
-
-## Lift-off Distance
-
-Read lift-off distance for every configured DPI stage:
-
-```bash
-steelseriesctl lod get
-```
-
-Set one stage to Low (1 mm) or High (2 mm):
-
-```bash
-steelseriesctl lod set low 1
-steelseriesctl lod set high 4
-```
-
----
-
-## Polling Rate
-
-Read current polling rates:
-
-```bash
+# Get and configure polling rate
 steelseriesctl polling get
-```
+steelseriesctl polling set wireless 1000
 
-Set the 2.4 GHz wireless polling rate:
+# Get and configure lift-off distance
+steelseriesctl lod get
+steelseriesctl lod set low 1
 
-```bash
-steelseriesctl polling set wireless 4000
-```
-
-Set the wired polling rate:
-
-```bash
-steelseriesctl polling set wired 1000
-```
-
----
-
-## Battery
-
-Read battery and charging status:
-
-```bash
+# Check battery level and charging status
 steelseriesctl battery get
-```
 
-Battery telemetry may temporarily be unavailable after switching connection modes.
-
----
-
-## Power Management
-
-Read the complete power configuration:
-
-```bash
+# View power settings
 steelseriesctl power get
-```
 
-Change individual settings while preserving the other power fields:
-
-```bash
-steelseriesctl power low-power set on
-steelseriesctl power low-power set off
-steelseriesctl power low-power polling 125
-
-steelseriesctl power auto-low-power set on
-steelseriesctl power auto-low-power set off
-steelseriesctl power auto-low-power threshold 10
-
+# Set sleep timer (minutes)
 steelseriesctl power sleep set 30
-```
 
-Low Power polling accepts 125, 250, or 500 Hz.
-
-Auto Low Power thresholds accept 5–25%.
-
-The sleep timer accepts whole minutes from 1 through 71582. The upper value is the largest whole-minute value encodable by the verified `u32` millisecond field; hardware testing currently covers values through 1440 minutes.
-
----
-
-## Wireless Stability Enhancement
-
-```bash
-steelseriesctl wireless-stability
-steelseriesctl wireless-stability get
+# Configure wireless stability
 steelseriesctl wireless-stability set on
-steelseriesctl wireless-stability set off
-```
 
-## Bluetooth Smoothing
-
-```bash
-steelseriesctl bluetooth-smoothing
-steelseriesctl bluetooth-smoothing get
+# Configure Bluetooth smoothing
 steelseriesctl bluetooth-smoothing set on
-steelseriesctl bluetooth-smoothing set off
-```
 
-Wireless Stability Enhancement and Bluetooth Smoothing are stored independently from the normal wired and 2.4 GHz polling configuration. Changing one toggle preserves the other.
-
----
-
-## Scroll Jump Protection
-
-```bash
-steelseriesctl scroll-jump
-steelseriesctl scroll-jump get
+# Configure scroll jump protection
 steelseriesctl scroll-jump set on
-steelseriesctl scroll-jump delay 500
-steelseriesctl scroll-jump set off
 ```
 
-The delay is configured in milliseconds. The currently supported CLI range is 100–1500 ms in 100 ms steps.
+### Output Formats
 
-Changing the delay preserves the enabled state, and changing the enabled state preserves the delay.
-
----
-
-## Architecture
-
-The project is split into two Rust crates:
-
-```text
-crates/
-├── steelseries-core/
-└── steelseries-cli/
-```
-
-`steelseries-core` contains device discovery, capability handling, HID protocol logic, and physical-device selection.
-
-`steelseries-cli` provides the `steelseriesctl` command and both human-readable and JSON output.
-
-The planned graphical application is a separate executable/process and will use the `steelseriesctl --json` interface rather than requiring a background daemon.
-
----
-
-## Development
-
-Run tests:
+For scripting and integration with other tools:
 
 ```bash
-cargo test --workspace
+# JSON output
+steelseriesctl --json device list
+
+# Get all device settings as JSON
+steelseriesctl --json device snapshot
+
+# Get battery information as JSON
+steelseriesctl --json battery get
 ```
-
-Run Clippy:
-
-```bash
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
-Check formatting:
-
-```bash
-cargo fmt --all -- --check
-```
-
-Check patch whitespace:
-
-```bash
-git diff --check
-```
-
----
 
 ## Roadmap
 
-### v0.4
-
-- Device capability, description, and snapshot API
-- First separate graphical application
-- Device overview and configuration UI
-- Tray battery indicator
-- GUI integration through the versioned `steelseriesctl --json` interface
-
 ### v0.5
 
-- Aerox 3 Wired support (`1038:1836`)
-- Device-specific capability handling for the wired model
+- Battery notifications
+- Improve recovery when USB/2.4 GHz endpoints change or a device reconnects.
+- Aerox 3 Wired support (Probably)
 
 ### Later
 
 - Onboard/default lighting research
 - Additional SteelSeries devices
 - Button mapping / remapping research
-- Packaging and AUR improvements
 
 RGB animation streaming is intentionally not a current priority; onboard/default lighting behavior may be investigated separately.
-
----
 
 ## Disclaimer
 

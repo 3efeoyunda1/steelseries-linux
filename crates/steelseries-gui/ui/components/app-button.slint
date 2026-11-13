@@ -1,0 +1,63 @@
+import { ButtonMetrics, ButtonPalette } from "../theme.slint";
+
+export enum ButtonSize { compact, toolbar, large }
+export enum ButtonVariant { neutral, accent, danger, toolbar }
+
+export component AppButton inherits Rectangle {
+    in property <string> text;
+    in property <ButtonSize> size: compact;
+    in property <ButtonVariant> variant: neutral;
+    in property <bool> enabled: true;
+    in property <bool> fill: false;
+    callback clicked();
+
+    private property <length> size-min-width: root.size == ButtonSize.toolbar
+        ? ButtonMetrics.toolbar-width
+        : root.size == ButtonSize.large ? ButtonMetrics.large-min-width : ButtonMetrics.compact-min-width;
+    private property <length> horizontal-padding: root.size == ButtonSize.large
+        ? ButtonMetrics.large-horizontal-padding : ButtonMetrics.compact-horizontal-padding;
+
+    // The label's intrinsic width never depends on the button's allocated width.
+    // Fill buttons share the available width equally; other buttons remain content-sized.
+    preferred-width: root.size == ButtonSize.toolbar ? ButtonMetrics.toolbar-width
+        : root.fill ? root.size-min-width
+        : Math.max(root.size-min-width, label.preferred-width + 2 * root.horizontal-padding);
+    min-width: root.size-min-width;
+    // Slint widgets use a large finite maximum for an unconstrained layout item.
+    max-width: root.fill && root.size != ButtonSize.toolbar ? 100000px : self.preferred-width;
+    horizontal-stretch: root.fill && root.size != ButtonSize.toolbar ? 1 : 0;
+    vertical-stretch: 0;
+    height: root.size == ButtonSize.large ? ButtonMetrics.large-height
+        : root.size == ButtonSize.toolbar ? ButtonMetrics.toolbar-height : ButtonMetrics.compact-height;
+    border-radius: root.size == ButtonSize.large ? 6px : 5px;
+    border-width: root.variant == ButtonVariant.accent || root.variant == ButtonVariant.danger ? 0px : 1px;
+    border-color: root.variant == ButtonVariant.toolbar
+        ? (area.has-hover ? #d96f25 : #454545)
+        : root.size == ButtonSize.large ? #4a4a4a : #484848;
+    opacity: root.enabled ? 1 : root.size == ButtonSize.compact ? 0.4 : 0.45;
+    background: root.variant == ButtonVariant.accent
+        ? (area.pressed ? #d96816 : area.has-hover ? #f58534 : #e87524)
+        : root.variant == ButtonVariant.toolbar
+            ? (area.pressed ? #30241e : area.has-hover ? #2d2926 : #242424)
+            : root.variant == ButtonVariant.danger
+                ? (area.pressed ? ButtonPalette.danger-pressed : area.has-hover ? ButtonPalette.danger-hover : ButtonPalette.danger-normal)
+                : root.size == ButtonSize.large
+                    ? (area.pressed ? #292929 : area.has-hover ? #303030 : #242424)
+                    : (area.has-hover ? #303030 : #262626);
+
+    label := Text {
+        text: root.text;
+        font-size: root.size == ButtonSize.large ? 14px : root.size == ButtonSize.toolbar ? 12px : 11px;
+        font-weight: root.size == ButtonSize.large ? 600 : root.size == ButtonSize.toolbar ? 500 : 400;
+        color: root.variant == ButtonVariant.toolbar ? (area.has-hover ? #f18a42 : #dddddd)
+            : root.variant == ButtonVariant.danger ? ButtonPalette.danger-text
+            : root.variant == ButtonVariant.accent || root.size == ButtonSize.large ? #fff8f2 : #e5e5e5;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    area := TouchArea {
+        enabled: root.enabled;
+        clicked => { if root.enabled { root.clicked(); } }
+    }
+}

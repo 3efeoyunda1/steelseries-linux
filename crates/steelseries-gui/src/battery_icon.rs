@@ -5,7 +5,7 @@ use slint::Image;
 
 use crate::{settings::TrayIconTheme, tray::TrayState};
 
-const APP_LOGO: &[u8] = include_bytes!("../../../assets/app/steelseries-linux.svg");
+const APP_LOGO: &[u8] = include_bytes!("../../../assets/app/steelseries-linux-gui.svg");
 
 const COLORED_NORMAL: [&[u8]; 11] = [
     include_bytes!("../../../assets/battery/colored/normal/battery-000.svg"),
@@ -159,6 +159,38 @@ fn svg_to_tray_icon(svg: &[u8]) -> Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn battery_artwork_and_tray_rasters_keep_their_vertical_center() {
+        for style in [BatteryAssetStyle::Colored, BatteryAssetStyle::Monochrome] {
+            for charging in [false, true] {
+                for level in (0..=100).step_by(10) {
+                    let asset = BatteryAsset::for_percentage(style, level, charging);
+                    let icon = svg_to_tray_icon(asset.svg());
+                    assert_eq!((icon.width, icon.height), (64, 40));
+                    let rows: Vec<_> = icon
+                        .data
+                        .as_chunks::<256>()
+                        .0
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(y, row)| {
+                            row.as_chunks::<4>().0.iter().any(|p| p[0] > 0).then_some(y)
+                        })
+                        .collect();
+                    assert_eq!(
+                        rows.first().unwrap() + rows.last().unwrap() + 1,
+                        40,
+                        "asset geometry shifted for {asset:?}"
+                    );
+                    assert!(
+                        rows[0] > 0 && *rows.last().unwrap() < 39,
+                        "artwork must not be clipped"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn nearest_ten_mapping_uses_documented_boundaries() {

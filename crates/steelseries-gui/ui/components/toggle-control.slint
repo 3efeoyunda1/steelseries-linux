@@ -1,0 +1,28 @@
+import { AppButton, ButtonSize, ButtonVariant } from "app-button.slint";
+import { ButtonMetrics } from "../theme.slint";
+
+export component ToggleControl inherits HorizontalLayout {
+    in property <string> label;
+    in property <length> label-min-width: 0px;
+    in property <bool> value;
+    in property <bool> enabled: true;
+    callback toggled();
+    height: 30px;
+    Text {
+        text: root.label;
+        min-width: root.label-min-width;
+        horizontal-stretch: 1;
+        color: #a0a0a0;
+        font-size: 13px;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+    }
+    AppButton {
+        size: ButtonSize.compact;
+        width: ButtonMetrics.toggle-width;
+        text: root.value ? "On" : "Off";
+        variant: root.value ? ButtonVariant.accent : ButtonVariant.neutral;
+        enabled: root.enabled;
+        clicked => { root.toggled(); }
+    }
+}

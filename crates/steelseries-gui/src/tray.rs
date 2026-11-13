@@ -47,7 +47,7 @@ impl TrayController {
             };
             match tray.assume_sni_available(true).spawn() {
                 Ok(handle) => self.handle = Some(handle),
-                Err(error) => eprintln!("steelseries-gui: system tray unavailable: {error}"),
+                Err(error) => eprintln!("steelseries-linux-gui: system tray unavailable: {error}"),
             }
         } else if !enabled && let Some(handle) = self.handle.take() {
             handle.shutdown().wait();

@@ -1,0 +1,30 @@
+// Both in-window battery displays share a centered icon/text row.
+export component BatteryIndicator inherits HorizontalLayout {
+    in property <image> icon;
+    in property <string> text;
+    in property <length> text-size: 15px;
+    in property <int> text-weight: 600;
+    in property <color> text-color: #f1f1f1;
+    spacing: 8px;
+    cross-axis-alignment: center;
+
+    Rectangle {
+        width: 32px;
+        height: 20px;
+        Image {
+            y: 0.5px;
+            width: parent.width;
+            height: parent.height;
+            source: root.icon;
+            image-fit: contain;
+        }
+    }
+    Text {
+        text: root.text;
+        color: root.text-color;
+        font-size: root.text-size;
+        font-weight: root.text-weight;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}

@@ -1,4 +1,10 @@
-import { ComboBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
+import { LineEdit, ScrollView, Slider } from "std-widgets.slint";
+import { AppButton, ButtonSize, ButtonVariant } from "components/app-button.slint";
+import { BatteryIndicator } from "components/battery-indicator.slint";
+import { ToggleControl } from "components/toggle-control.slint";
+import { SelectControl } from "components/select-control.slint";
+import { SliderNumericControl } from "components/slider-numeric-control.slint";
+import { ButtonMetrics, ControlMetrics } from "theme.slint";
 
 export struct DeviceItem {
     name: string,
@@ -122,83 +128,6 @@ export struct DashboardData {
     scroll-jump-delay-unit: string,
 }
 
-component ActionButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> secondary: false;
-    in property <bool> enabled: true;
-    callback clicked;
-
-    height: 38px;
-    min-width: 100px;
-    border-radius: 6px;
-    border-width: secondary ? 1px : 0px;
-    border-color: #4a4a4a;
-    opacity: enabled ? 1 : 0.45;
-    background: button-area.pressed
-        ? (secondary ? #292929 : #d96816)
-        : button-area.has-hover
-            ? (secondary ? #303030 : #f58534)
-            : (secondary ? #242424 : #e87524);
-
-    Text {
-        text: root.text;
-        color: #fff8f2;
-        font-size: 14px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    button-area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
-}
-
-component ToolbarButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> enabled: true;
-    callback clicked;
-
-    height: 30px;
-    width: 96px;
-    horizontal-stretch: 0;
-    border-radius: 5px;
-    border-width: 1px;
-    border-color: button-area.has-hover ? #d96f25 : #454545;
-    opacity: enabled ? 1 : 0.45;
-    background: button-area.pressed ? #30241e : button-area.has-hover ? #2d2926 : #242424;
-
-    Text {
-        text: root.text;
-        color: button-area.has-hover ? #f18a42 : #dddddd;
-        font-size: 12px;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    button-area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
-}
-
-component SmallButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> selected: false;
-    in property <bool> enabled: true;
-    in property <bool> danger: false;
-    callback clicked;
-    height: 28px;
-    min-width: 34px;
-    border-radius: 5px;
-    border-width: selected ? 0px : 1px;
-    border-color: danger ? #7a433d : #484848;
-    background: danger
-        ? (area.has-hover ? #3a2421 : #2d211f)
-        : selected
-            ? (area.pressed ? #d96816 : area.has-hover ? #f58534 : #e87524)
-            : area.has-hover ? #303030 : #262626;
-    opacity: enabled ? 1 : 0.4;
-    Text { text: root.text; color: danger ? #e6a096 : selected ? #fff8f2 : #e5e5e5; font-size: 11px; font-weight: selected ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
-    area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
-}
-
 component DeviceCard inherits Rectangle {
     in property <DeviceItem> device;
     callback selected;
@@ -209,32 +138,29 @@ component DeviceCard inherits Rectangle {
     border-color: card-area.has-hover ? #e87524 : #343434;
     background: card-area.pressed ? #292929 : card-area.has-hover ? #252525 : #202020;
 
-    VerticalLayout {
+    HorizontalLayout {
         padding: 18px;
-        spacing: 7px;
-        Text { text: root.device.name; color: #f4f4f4; font-size: 18px; font-weight: 600; }
-        HorizontalLayout {
-            spacing: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            spacing: 7px;
+            horizontal-stretch: 1;
+            Text { text: root.device.name; color: #f4f4f4; font-size: 18px; font-weight: 600; }
             Text { text: root.device.connection; color: #f18a42; font-size: 14px; vertical-alignment: center; }
-            Rectangle { background: transparent; horizontal-stretch: 1; }
-            if root.device.battery-available: Image {
-                width: 32px;
-                height: 20px;
-                source: root.device.battery-icon;
-                image-fit: contain;
-            }
-            if root.device.battery-available: Text {
-                text: root.device.battery-percentage + "%";
-                color: #cfcfcf;
-                font-size: 12px;
-                vertical-alignment: center;
+            Text {
+                text: root.device.identity-label;
+                color: #929292;
+                font-size: 11px;
+                overflow: elide;
             }
         }
-        Text {
-            text: root.device.identity-label;
-            color: #929292;
-            font-size: 11px;
-            overflow: elide;
+        if root.device.battery-available: BatteryIndicator {
+            icon: root.device.battery-icon;
+            text: root.device.battery-percentage + "%";
+            text-color: #cfcfcf;
+            text-size: 12px;
+            text-weight: 400;
+            horizontal-stretch: 0;
+            cross-axis-self-alignment: center;
         }
     }
     card-area := TouchArea { clicked => { root.selected(); } }
@@ -254,16 +180,19 @@ component BatteryOverviewCard inherits Rectangle {
     VerticalLayout {
         padding: 13px;
         spacing: 6px;
-        Text { text: "Battery"; color: #8f8f8f; font-size: 11px; }
-        HorizontalLayout {
-            spacing: 8px;
-            Image {
-                width: 32px;
+        // Match the title/value slot distribution of the other overview cards.
+        Text { text: "Battery"; color: #8f8f8f; font-size: 11px; vertical-stretch: 1; }
+        Rectangle {
+            min-height: 20px;
+            max-height: root.height;
+            vertical-stretch: 1;
+            BatteryIndicator {
+                y: 0px;
+                width: parent.width;
                 height: 20px;
-                source: root.battery-icon;
-                image-fit: contain;
+                icon: root.battery-icon;
+                text: root.value;
             }
-            Text { text: root.value; color: #f1f1f1; font-size: 15px; font-weight: 600; vertical-alignment: center; overflow: elide; }
         }
     }
 }
@@ -283,193 +212,6 @@ component OverviewCard inherits Rectangle {
         spacing: 6px;
         Text { text: root.title; color: #8f8f8f; font-size: 11px; }
         Text { text: root.value; color: root.primary ? #f18a42 : #f1f1f1; font-size: 15px; font-weight: 600; overflow: elide; }
-    }
-}
-
-component SelectControl inherits HorizontalLayout {
-    in property <string> label;
-    in property <length> label-min-width: 0px;
-    in property <[string]> options;
-    in property <int> current-index;
-    in property <bool> enabled: true;
-    callback selected(int);
-    height: 34px;
-    spacing: 12px;
-    Text { text: root.label; min-width: root.label-min-width; color: #a0a0a0; font-size: 13px; vertical-alignment: center; }
-    selector := ComboBox {
-        model: root.options;
-        current-index: root.current-index;
-        enabled: root.enabled;
-        selected => { root.selected(self.current-index); }
-    }
-}
-
-component ToggleControl inherits HorizontalLayout {
-    in property <string> label;
-    in property <length> label-min-width: 0px;
-    in property <bool> value;
-    in property <bool> enabled: true;
-    callback toggled;
-    height: 30px;
-    Text { text: root.label; min-width: root.label-min-width; color: #a0a0a0; font-size: 13px; vertical-alignment: center; }
-    SmallButton { text: root.value ? "On" : "Off"; selected: root.value; enabled: root.enabled; clicked => { root.toggled(); } }
-}
-
-component SliderNumericControl inherits VerticalLayout {
-    in property <string> label;
-    in property <int> value;
-    in property <int> minimum;
-    in property <int> maximum;
-    in property <int> step;
-    in property <string> unit;
-    in property <bool> enabled: true;
-    in property <int> reset-generation;
-    private property <string> original-text: "" + root.value;
-    private property <string> edit-text: "" + root.value;
-    private property <bool> edit-session-active: false;
-    private property <bool> text-dirty: false;
-    private property <bool> cancelled: false;
-    private property <bool> editor-has-focus: editor.has-focus;
-    private property <float> slider-value: root.value;
-    private property <bool> slider-active: false;
-    callback previewed(int);
-    callback committed(string) -> bool;
-    spacing: 5px;
-
-    changed reset-generation => {
-        if root.edit-session-active {
-            root.cancelled = true;
-            root.edit-text = root.original-text;
-            root.slider-value = root.value;
-            root.text-dirty = false;
-            root.edit-session-active = false;
-            editor.clear-focus();
-            root.cancelled = false;
-        }
-    }
-
-    changed value => {
-        if !root.slider-active {
-            root.slider-value = root.value;
-            if !root.edit-session-active {
-                root.edit-text = "" + root.value;
-            }
-        }
-    }
-
-    changed editor-has-focus => {
-        if root.editor-has-focus {
-            if !root.edit-session-active {
-                root.original-text = "" + root.value;
-                root.edit-text = "" + root.value;
-                root.text-dirty = false;
-                root.cancelled = false;
-                root.edit-session-active = true;
-            }
-        } else if root.edit-session-active {
-            if root.cancelled {
-                root.edit-text = root.original-text;
-                root.text-dirty = false;
-                root.cancelled = false;
-                root.edit-session-active = false;
-            } else if slider.has-focus {
-                root.edit-text = "" + root.value;
-                root.text-dirty = false;
-                root.edit-session-active = false;
-            } else if root.text-dirty {
-                if root.committed(root.edit-text) {
-                    root.edit-text = "" + root.value;
-                    root.original-text = root.edit-text;
-                    root.text-dirty = false;
-                    root.edit-session-active = false;
-                } else {
-                    editor.focus();
-                }
-            } else {
-                root.edit-session-active = false;
-            }
-        }
-    }
-
-    HorizontalLayout {
-        spacing: 10px;
-        Text { text: root.label; color: #a0a0a0; font-size: 12px; vertical-alignment: center; }
-        editor := LineEdit {
-            text <=> root.edit-text;
-            enabled: root.enabled;
-            input-type: InputType.number;
-            horizontal-alignment: center;
-            edited(text) => {
-                root.edit-text = text;
-                root.text-dirty = text != root.original-text;
-                if text != "" {
-                    let preview = text.to-float();
-                    if preview >= root.minimum && preview <= root.maximum {
-                        root.slider-value = preview;
-                    }
-                }
-            }
-            accepted(text) => {
-                root.edit-text = text;
-                root.text-dirty = text != root.original-text;
-                if !root.text-dirty {
-                    root.edit-session-active = false;
-                    self.clear-focus();
-                } else if root.committed(text) {
-                    root.edit-text = "" + root.value;
-                    root.original-text = root.edit-text;
-                    root.text-dirty = false;
-                    root.edit-session-active = false;
-                    self.clear-focus();
-                }
-            }
-            key-pressed(event) => {
-                if event.text == Key.Escape && root.edit-session-active {
-                    root.cancelled = true;
-                    root.edit-text = root.original-text;
-                    root.slider-value = root.value;
-                    self.clear-focus();
-                    return accept;
-                }
-                return reject;
-            }
-        }
-        Text { text: root.unit; color: #8c8c8c; font-size: 11px; vertical-alignment: center; }
-    }
-    slider := Slider {
-        minimum: root.minimum;
-        maximum: root.maximum;
-        step: root.step;
-        value <=> root.slider-value;
-        enabled: root.enabled;
-        changed(value) => {
-            root.slider-active = true;
-            root.edit-session-active = false;
-            root.text-dirty = false;
-            root.cancelled = false;
-            let raw = Math.round(value);
-            root.previewed(raw);
-            if !root.edit-session-active {
-                let displayed = root.step > 0
-                    ? Math.min(root.maximum, Math.max(root.minimum, root.minimum + Math.round((raw - root.minimum) / root.step) * root.step))
-                    : raw;
-                root.edit-text = "" + displayed;
-            }
-        }
-        released(value) => {
-            let raw = Math.round(value);
-            let finalized = root.step > 0
-                ? Math.min(root.maximum, Math.max(root.minimum, root.minimum + Math.round((raw - root.minimum) / root.step) * root.step))
-                : raw;
-            root.slider-active = false;
-            root.slider-value = finalized;
-            root.edit-text = "" + finalized;
-            root.committed("" + finalized);
-        }
-    }
-    HorizontalLayout {
-        Text { text: root.minimum; color: #777777; font-size: 10px; horizontal-alignment: left; }
-        Text { text: root.maximum; color: #777777; font-size: 10px; horizontal-alignment: right; }
     }
 }
 
@@ -553,40 +295,47 @@ component DpiSliderControl inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 10px;
-        Text { text: root.label; color: #a0a0a0; font-size: 12px; vertical-alignment: center; }
-        editor := LineEdit {
-            text: root.edit-text;
-            enabled: root.enabled;
-            input-type: InputType.number;
-            horizontal-alignment: center;
-            edited(text) => {
-                root.edit-text = text;
-                root.text-dirty = text != root.original-text;
-            }
-            accepted(text) => {
-                root.edit-text = text;
-                root.text-dirty = text != root.original-text;
-                if !root.text-dirty {
-                    root.edit-session-active = false;
-                    self.clear-focus();
-                } else if root.value-committed(text) {
-                    root.text-dirty = false;
-                    root.edit-session-active = false;
-                    self.clear-focus();
+        Text { text: root.label; color: #a0a0a0; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; horizontal-stretch: 1; }
+        HorizontalLayout {
+            spacing: 10px;
+            horizontal-stretch: 0;
+            max-width: self.preferred-width;
+            editor := LineEdit {
+                width: ControlMetrics.numeric-input-width;
+                horizontal-stretch: 0;
+                text: root.edit-text;
+                enabled: root.enabled;
+                input-type: InputType.number;
+                horizontal-alignment: center;
+                edited(text) => {
+                    root.edit-text = text;
+                    root.text-dirty = text != root.original-text;
+                }
+                accepted(text) => {
+                    root.edit-text = text;
+                    root.text-dirty = text != root.original-text;
+                    if !root.text-dirty {
+                        root.edit-session-active = false;
+                        self.clear-focus();
+                    } else if root.value-committed(text) {
+                        root.text-dirty = false;
+                        root.edit-session-active = false;
+                        self.clear-focus();
+                    }
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape && root.edit-session-active {
+                        root.cancelled = true;
+                        root.edit-text = root.original-text;
+                        root.slider-position = root.position;
+                        self.clear-focus();
+                        return accept;
+                    }
+                    return reject;
                 }
             }
-            key-pressed(event) => {
-                if event.text == Key.Escape && root.edit-session-active {
-                    root.cancelled = true;
-                    root.edit-text = root.original-text;
-                    root.slider-position = root.position;
-                    self.clear-focus();
-                    return accept;
-                }
-                return reject;
-            }
+            Text { text: "DPI"; color: #8c8c8c; font-size: 11px; vertical-alignment: center; }
         }
-        Text { text: "DPI"; color: #8c8c8c; font-size: 11px; vertical-alignment: center; }
     }
     dpi-slider := Slider {
         minimum: 0;
@@ -642,7 +391,7 @@ component DpiSliderControl inherits VerticalLayout {
 
 export component AppWindow inherits Window {
     title: "SteelSeries Linux";
-    icon: @image-url("../../../assets/app/steelseries-linux.svg");
+    icon: @image-url("../../../assets/app/steelseries-linux-gui.svg");
     in-out property <int> fixed-window-width: 1;
     in-out property <int> fixed-window-height: 1;
     min-width: root.fixed-window-width * 1px;
@@ -734,7 +483,11 @@ export component AppWindow inherits Window {
                 alignment: center;
                 spacing: 18px;
                 Text { text: "No supported SteelSeries devices found."; color: #dedede; font-size: 17px; horizontal-alignment: center; }
-                ActionButton { text: "Refresh"; secondary: true; clicked => { root.refresh-requested(); } }
+                HorizontalLayout {
+                    width: 100%;
+                    alignment: center;
+                    AppButton { size: ButtonSize.large; variant: ButtonVariant.neutral; text: "Refresh"; clicked => { root.refresh-requested(); } }
+                }
             }
         }
 
@@ -745,7 +498,11 @@ export component AppWindow inherits Window {
                 spacing: 12px;
                 Text { text: "Could not load devices"; color: #f0f0f0; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
                 Text { text: root.error-message; color: #b5b5b5; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
-                ActionButton { text: "Retry"; clicked => { root.refresh-requested(); } }
+                HorizontalLayout {
+                    width: 100%;
+                    alignment: center;
+                    AppButton { size: ButtonSize.large; variant: ButtonVariant.accent; text: "Retry"; clicked => { root.refresh-requested(); } }
+                }
             }
         }
 
@@ -756,8 +513,8 @@ export component AppWindow inherits Window {
                 spacing: 10px;
                 Text { text: "Devices"; color: #eeeeee; font-size: 20px; font-weight: 600; vertical-alignment: center; }
                 Rectangle { background: transparent; horizontal-stretch: 1; }
-                ToolbarButton { text: "Settings"; clicked => { root.settings-requested(); } }
-                ToolbarButton { text: "⟳  Refresh"; clicked => { root.refresh-requested(); } }
+                AppButton { size: ButtonSize.toolbar; variant: ButtonVariant.toolbar; text: "Settings"; clicked => { root.settings-requested(); } }
+                AppButton { size: ButtonSize.toolbar; variant: ButtonVariant.toolbar; text: "⟳  Refresh"; clicked => { root.refresh-requested(); } }
             }
             Rectangle {
                 background: transparent;
@@ -778,7 +535,7 @@ export component AppWindow inherits Window {
                 spacing: 10px;
                 Text { text: "Settings"; color: #eeeeee; font-size: 20px; font-weight: 600; vertical-alignment: center; }
                 Rectangle { background: transparent; horizontal-stretch: 1; }
-                ToolbarButton { text: "←  Devices"; clicked => { root.settings-back-requested(); } }
+                AppButton { size: ButtonSize.toolbar; variant: ButtonVariant.toolbar; text: "←  Devices"; clicked => { root.settings-back-requested(); } }
             }
             if root.settings-error != "": Rectangle {
                 height: 38px;
@@ -847,8 +604,8 @@ export component AppWindow inherits Window {
                                         Text { text: device.active ? device.connection : "Offline"; color: device.active ? #b5b5b5 : #777777; font-size: 11px; }
                                     }
                                     Rectangle { background: transparent; horizontal-stretch: 1; }
-                                    SmallButton { text: "↑"; enabled: index > 0; clicked => { root.priority-move-requested(index, -1); } }
-                                    SmallButton { text: "↓"; enabled: index + 1 < root.known-devices.length; clicked => { root.priority-move-requested(index, 1); } }
+                                    AppButton { size: ButtonSize.compact; width: ButtonMetrics.priority-arrow-width; variant: ButtonVariant.neutral; text: "↑"; enabled: index > 0; clicked => { root.priority-move-requested(index, -1); } }
+                                    AppButton { size: ButtonSize.compact; width: ButtonMetrics.priority-arrow-width; variant: ButtonVariant.neutral; text: "↓"; enabled: index + 1 < root.known-devices.length; clicked => { root.priority-move-requested(index, 1); } }
                                 }
                             }
                         }
@@ -875,9 +632,11 @@ export component AppWindow inherits Window {
                 Text { text: "Device unavailable"; color: #f0f0f0; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
                 Text { text: root.error-message; color: #b5b5b5; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
                 HorizontalLayout {
+                    width: 100%;
+                    alignment: center;
                     spacing: 10px;
-                    ActionButton { text: "Back to Devices"; secondary: true; clicked => { root.back-requested(); } }
-                    ActionButton { text: "Retry"; clicked => { root.dashboard-refresh-requested(); } }
+                    AppButton { size: ButtonSize.large; variant: ButtonVariant.neutral; text: "Back to Devices"; clicked => { root.back-requested(); } }
+                    AppButton { size: ButtonSize.large; variant: ButtonVariant.accent; text: "Retry"; clicked => { root.dashboard-refresh-requested(); } }
                 }
             }
         }
@@ -893,9 +652,9 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 height: 30px;
                 spacing: 10px;
-                ToolbarButton { text: "←  Devices"; enabled: !root.mutation-busy; clicked => { root.back-requested(); } }
+                AppButton { size: ButtonSize.toolbar; variant: ButtonVariant.toolbar; text: "←  Devices"; enabled: !root.mutation-busy; clicked => { root.back-requested(); } }
                 Rectangle { background: transparent; horizontal-stretch: 1; }
-                ToolbarButton { text: "⟳  Refresh"; enabled: !root.mutation-busy; clicked => { root.dashboard-refresh-requested(); } }
+                AppButton { size: ButtonSize.toolbar; variant: ButtonVariant.toolbar; text: "⟳  Refresh"; enabled: !root.mutation-busy; clicked => { root.dashboard-refresh-requested(); } }
             }
 
             if root.mutation-error != "": Rectangle {
@@ -1013,15 +772,15 @@ export component AppWindow inherits Window {
                                             }
                                             HorizontalLayout {
                                                 spacing: 10px;
-                                                if !row.persisted: SmallButton { text: "Apply"; selected: true; enabled: !root.mutation-busy; clicked => { root.dpi-apply-requested(index); } }
-                                                if !row.active: SmallButton { text: "Use"; selected: true; enabled: !root.mutation-busy && row.persisted; clicked => { root.active-dpi-requested(index + 1); } }
-                                                SmallButton { text: "Remove"; danger: true; enabled: !root.mutation-busy && root.dpi-rows.length > 1; clicked => { root.dpi-remove-requested(index); } }
+                                                if !row.persisted: AppButton { size: ButtonSize.compact; fill: true; variant: ButtonVariant.accent; text: "Apply"; enabled: !root.mutation-busy; clicked => { root.dpi-apply-requested(index); } }
+                                                if !row.active: AppButton { size: ButtonSize.compact; fill: true; variant: ButtonVariant.accent; text: "Use"; enabled: !root.mutation-busy && row.persisted; clicked => { root.active-dpi-requested(index + 1); } }
+                                                AppButton { size: ButtonSize.compact; fill: true; variant: ButtonVariant.danger; text: "Remove"; enabled: !root.mutation-busy && root.dpi-rows.length > 1; clicked => { root.dpi-remove-requested(index); } }
                                             }
                                         }
                                     }
                                     if root.dpi-rows.length < root.dashboard.dpi-max-stages: HorizontalLayout {
                                         spacing: 10px;
-                                        SmallButton { text: root.mutation-busy ? "Saving..." : "Add Stage"; enabled: !root.mutation-busy; clicked => { root.dpi-add-requested(); } }
+                                        AppButton { size: ButtonSize.compact; fill: true; variant: ButtonVariant.neutral; text: root.mutation-busy ? "Saving..." : "Add Stage"; enabled: !root.mutation-busy; clicked => { root.dpi-add-requested(); } }
                                     }
                                 }
                             }

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+
+- Persistent GUI settings, known-device registry, and configurable device priority
+- Configurable background device discovery and battery monitoring shared by the GUI and system tray
+- System tray with battery and charging icons, selectable colored/monochrome icon styles, and hide/restore behavior
+- Optional user-level XDG autostart with a tray-aware `--autostart` launch mode
+- Separate CLI and optional GUI packages for Arch Linux, Debian, and Fedora, with matching-version GUI-to-CLI dependencies
+- Single-instance GUI activation: launching again opens the existing window, including when hidden in the tray
+
+### Changed
+
+- GUI executable, desktop entry, application ID, and icon now use `steelseries-linux-gui`; the visible application name remains SteelSeries Linux
+- Existing application-managed autostart entries migrate to the renamed GUI executable
+- Start-at-login launches now always start hidden in the system tray, enabling the tray when needed
+- DPI sliders use capability-selected curves, snapped numeric previews, and clickable reference labels; persisted stages save on release without writes during dragging
+- Sleep Timer exposes a recommended GUI range separately from the full CLI capability range
+
+### Fixed
+
+- Fix Fedora 45 GUI RPM installation by declaring the correct Wayland, X11, and XKB runtime library dependencies
+- Build Fedora RPM packages in a Fedora 45 container with distribution-tagged package versions
+- Avoid a ghost KDE Wayland taskbar entry on hidden autostart by creating the main window only when opened, while preserving tray and single-instance activation
+- Reapply native window constraints after tray restore to preserve the fixed-size GUI
+- Set the desktop application identity so Wayland desktops can associate the window with its icon
+- Keep generic sliders and numeric inputs synchronized after manual edits
+- Preserve cached battery percentage and charging state during device discovery
+
 ## 0.4.0
 
 ### Added
@@ -56,7 +85,7 @@
 - Native Debian/Ubuntu package
 - Native Fedora package
 
-### Improved
+### Changed
 
 - HID response filtering
 - Physical-device deduplication

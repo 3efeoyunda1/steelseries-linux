@@ -1,14 +1,14 @@
 pkgbase=steelseries-linux
 pkgname=('steelseries-linux' 'steelseries-linux-gui')
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Linux configuration tools for supported SteelSeries devices"
 arch=('x86_64')
 url="https://github.com/3efeoyunda1/steelseries-linux"
 license=('MIT')
-options=('!lto')
-makedepends=('cargo' 'rust' 'pkgconf')
-source=("${pkgbase}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+options=('!lto' '!debug')
+makedepends=('cargo' 'rust' 'pkgconf' 'fontconfig' 'systemd')
+source=("${pkgbase}-${pkgver}.tar.gz::${url}/archive/refs/tags/${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
@@ -18,7 +18,8 @@ prepare() {
 
 build() {
   cd "${pkgbase}-${pkgver}"
-  CARGO_TARGET_DIR="${srcdir}/target" cargo build --release --locked \
+  RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }--remap-path-prefix=${srcdir}=/usr/src/steelseries-linux" \
+    CARGO_TARGET_DIR="${srcdir}/target" cargo build --release --locked \
     -p steelseries-cli -p steelseries-gui
 }
 
@@ -46,13 +47,13 @@ package_steelseries-linux-gui() {
   cd "${pkgbase}-${pkgver}"
 
   pkgdesc="Graphical application for SteelSeries Linux"
-  depends=("steelseries-linux=${pkgver}-${pkgrel}" 'glibc' 'gcc-libs' 'fontconfig')
+  depends=("steelseries-linux=${pkgver}-${pkgrel}" 'glibc' 'gcc-libs' 'fontconfig' 'wayland' 'libxkbcommon' 'libx11' 'libxcursor' 'libxi' 'libxrandr')
 
-  install -Dm755 "${srcdir}/target/release/steelseries-gui" \
-    "${pkgdir}/usr/bin/steelseries-gui"
-  install -Dm644 assets/app/steelseries-linux.desktop \
-    "${pkgdir}/usr/share/applications/steelseries-linux.desktop"
-  install -Dm644 assets/app/steelseries-linux.svg \
-    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/steelseries-linux.svg"
+  install -Dm755 "${srcdir}/target/release/steelseries-linux-gui" \
+    "${pkgdir}/usr/bin/steelseries-linux-gui"
+  install -Dm644 assets/app/steelseries-linux-gui.desktop \
+    "${pkgdir}/usr/share/applications/steelseries-linux-gui.desktop"
+  install -Dm644 assets/app/steelseries-linux-gui.svg \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/steelseries-linux-gui.svg"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

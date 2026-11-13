@@ -1,134 +1,131 @@
-# Native packaging
+# Native Packaging
 
-The native packaging is split into two installable packages:
+SteelSeries Linux provides native packages for Arch Linux, Debian, Ubuntu, and Fedora.
 
-- `steelseries-linux` installs `steelseriesctl` and the udev rules.
-- `steelseries-linux-gui` installs the optional GUI, desktop entry, and application
-  icon, and depends on the matching `steelseries-linux` version.
+The application is distributed as two separate packages:
 
-Installing the CLI package alone does not install GUI dependencies.
+| Package | Description |
+|---------|-------------|
+| `steelseries-linux` | Command-line utility (`steelseriesctl`) and udev rules |
+| `steelseries-linux-gui` | Graphical application, desktop entry |
 
-Package scriptlets reload udev rules after installation, upgrade, and removal. Reconnecting an already attached mouse or receiver may still be necessary for its desktop-session ACL to refresh.
+The GUI package depends on the matching CLI package version. The CLI can be installed independently without GUI dependencies.
 
-Build each format in its native distribution, or in a suitable build container using that distribution's packaging tools and the declared build dependencies.
+## Building Packages
 
-Final artifacts are copied to `dist/arch`, `dist/debian`, and `dist/fedora`.
+Clone the repository:
 
----
+```bash
+git clone https://github.com/3efeoyunda1/steelseries-linux.git
+cd steelseries-linux
+```
 
-## Arch Linux / CachyOS
+Install the build dependencies for your distribution, then run the corresponding packaging script.
 
-From the repository root:
+### Arch Linux / CachyOS
+
+Install the required packages:
+
+```bash
+sudo pacman -S --needed \
+  base-devel git rust cargo pkgconf \
+  fontconfig freetype2 ttf-dejavu \
+  systemd libusb hidapi
+```
+
+Build both packages:
 
 ```bash
 ./scripts/build-arch-package.sh
 ```
 
-The helper:
+Generated packages are placed in `dist/arch/`.
 
-- copies `arch/PKGBUILD` and its install hook into a temporary build directory;
-- creates the expected source archive;
-- runs a clean `makepkg -sf` build;
-- copies both resulting packages to `dist/arch/`;
-- removes temporary makepkg output after the build.
+### Debian / Ubuntu
 
-Inspect the package contents:
+Install the required packages:
 
 ```bash
-pacman -Qlp dist/arch/steelseries-linux-0.4.0-1-x86_64.pkg.tar.zst
-pacman -Qlp dist/arch/steelseries-linux-gui-0.4.0-1-x86_64.pkg.tar.zst
+sudo apt update
+sudo apt install \
+  build-essential git dpkg-dev debhelper \
+  cargo rustc pkg-config \
+  libudev-dev libusb-1.0-0-dev libhidapi-dev \
+  libfontconfig1-dev libfreetype6-dev fonts-dejavu-core \
+  libwayland-dev libx11-dev libxkbcommon-dev
 ```
 
-Install:
-
-```bash
-sudo pacman -U ./dist/arch/steelseries-linux-0.4.0-1-x86_64.pkg.tar.zst
-sudo pacman -U ./dist/arch/steelseries-linux-gui-0.4.0-1-x86_64.pkg.tar.zst
-```
-
----
-
-## Debian / Ubuntu
-
-From the repository root on a Debian-family build system:
+Build both packages:
 
 ```bash
 ./scripts/build-debian-package.sh
 ```
 
-The helper runs:
+Generated packages are placed in `dist/debian/`.
+
+**Note:** Some Debian releases provide older Rust toolchains. Make sure your Rust compiler supports the project's dependencies before building.
+
+When using an external Rust toolchain that is not registered with dpkg, the build script supports:
 
 ```bash
-dpkg-buildpackage -b -us -uc
+STEELSERIES_EXTERNAL_RUST_TOOLCHAIN=1 \
+  ./scripts/build-debian-package.sh
 ```
 
-and copies both binary packages to `dist/debian/`.
+### Fedora
 
-When building in an official Rust container whose toolchain is not registered in dpkg's package database, set:
+Install the required packages:
 
 ```bash
-STEELSERIES_EXTERNAL_RUST_TOOLCHAIN=1 ./scripts/build-debian-package.sh
+sudo dnf install \
+  rpm-build cargo rust gcc gcc-c++ make git \
+  pkgconf-pkg-config \
+  systemd-devel systemd-rpm-macros \
+  libusb1-devel hidapi-devel \
+  fontconfig-devel freetype-devel dejavu-sans-fonts \
+  wayland-devel libX11-devel libxkbcommon-devel
 ```
 
-The declared Debian build dependencies remain unchanged. This flag only skips dpkg's package-database check for the externally supplied Rust toolchain.
-
-Inspect the package contents:
-
-```bash
-dpkg-deb -c dist/debian/steelseries-linux_0.4.0-1_amd64.deb
-dpkg-deb -c dist/debian/steelseries-linux-gui_0.4.0-1_amd64.deb
-```
-
-Install:
-
-```bash
-sudo apt install ./dist/debian/steelseries-linux_0.4.0-1_amd64.deb
-sudo apt install ./dist/debian/steelseries-linux-gui_0.4.0-1_amd64.deb
-```
-
----
-
-## Fedora
-
-From the repository root on a Fedora build system:
+Build both packages:
 
 ```bash
 ./scripts/build-fedora-package.sh
 ```
 
-The helper:
+Generated packages are placed in `dist/fedora/`.
 
-- creates an isolated RPM top directory;
-- runs `rpmbuild -ba`;
-- copies both resulting binary RPMs to `dist/fedora/`.
+## Package Verification
 
-Inspect the package contents:
+Inspect the generated packages using the distribution's native tools.
 
-```bash
-rpm -qlp dist/fedora/steelseries-linux-0.4.0-1.*.x86_64.rpm
-rpm -qlp dist/fedora/steelseries-linux-gui-0.4.0-1.*.x86_64.rpm
-```
-
-Install:
+### Arch Linux
 
 ```bash
-sudo dnf install ./dist/fedora/steelseries-linux-0.4.0-1.*.x86_64.rpm
-sudo dnf install ./dist/fedora/steelseries-linux-gui-0.4.0-1.*.x86_64.rpm
+for pkg in dist/arch/*.pkg.tar.zst; do
+  pacman -Qlp "$pkg"
+done
 ```
 
----
-
-## Release checklist
-
-Before publishing release packages:
+### Debian / Ubuntu
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-git diff --check
+for pkg in dist/debian/*.deb; do
+  dpkg-deb -c "$pkg"
+done
 ```
 
-Make sure the workspace version in `Cargo.toml` matches the release version before building packages.
+### Fedora
 
-For v0.4.0, package filenames should use `0.4.0` consistently across Arch, Debian, and Fedora artifacts.
+```bash
+for pkg in dist/fedora/*.rpm; do
+  rpm -qlp "$pkg"
+done
+```
+
+Before distributing packages, verify that both packages were generated, their versions match, and their contents and dependencies are correct.
+
+## Installation
+
+Prebuilt packages and installation instructions are available in the [README](README.md).
+
+Download releases from [GitHub Releases](https://github.com/3efeoyunda1/steelseries-linux/releases).

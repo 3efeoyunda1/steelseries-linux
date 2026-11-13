@@ -2,7 +2,7 @@
 Type=Application
 Name=SteelSeries Linux
 Comment=Configure supported SteelSeries devices on Linux
-Exec=steelseries-gui
-Icon=steelseries-linux
+Exec=steelseries-linux-gui
+Icon=steelseries-linux-gui
 Terminal=false
 Categories=Settings;HardwareSettings;

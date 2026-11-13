@@ -66,7 +66,7 @@ impl MonitorController {
         if let Ok(settings) = self.settings.lock()
             && let Err(error) = settings.save(&self.settings_path)
         {
-            eprintln!("steelseries-gui: could not save settings: {error}");
+            eprintln!("steelseries-linux-gui: could not save settings: {error}");
         }
     }
 }
@@ -84,7 +84,7 @@ fn monitor_loop(
         let error = refresh_monitor(&client, &settings, &settings_path, &mut state)
             .err()
             .map(|error| {
-                eprintln!("steelseries-gui: {error}");
+                eprintln!("steelseries-linux-gui: {error}");
                 error.user_message()
             });
         state.poll_in_progress = false;
@@ -117,7 +117,7 @@ fn refresh_monitor(
     if let Ok(mut settings) = settings.lock() {
         state.reconcile_devices(&mut settings, devices);
         if let Err(error) = settings.save(settings_path) {
-            eprintln!("steelseries-gui: could not save device registry: {error}");
+            eprintln!("steelseries-linux-gui: could not save device registry: {error}");
         }
     }
 
@@ -134,7 +134,7 @@ fn refresh_monitor(
             }
             Err(error) => {
                 state.batteries.remove(&target);
-                eprintln!("steelseries-gui: battery query failed: {error}");
+                eprintln!("steelseries-linux-gui: battery query failed: {error}");
                 break;
             }
         }

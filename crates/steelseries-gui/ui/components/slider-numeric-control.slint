@@ -1,0 +1,168 @@
+import { LineEdit, Slider } from "std-widgets.slint";
+import { ControlMetrics } from "../theme.slint";
+
+export component SliderNumericControl inherits VerticalLayout {
+    in property <string> label;
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+    in property <int> step;
+    in property <string> unit;
+    in property <bool> enabled: true;
+    in property <int> reset-generation;
+    private property <string> original-text: "" + root.value;
+    private property <string> edit-text: "" + root.value;
+    private property <bool> edit-session-active: false;
+    private property <bool> text-dirty: false;
+    private property <bool> cancelled: false;
+    private property <bool> editor-has-focus: editor.has-focus;
+    private property <float> slider-value: root.value;
+    private property <bool> slider-active: false;
+    callback previewed(int);
+    callback committed(string) -> bool;
+    spacing: 5px;
+
+    changed reset-generation => {
+        if root.edit-session-active {
+            root.cancelled = true;
+            root.edit-text = root.original-text;
+            root.slider-value = root.value;
+            root.text-dirty = false;
+            root.edit-session-active = false;
+            editor.clear-focus();
+            root.cancelled = false;
+        }
+    }
+
+    changed value => {
+        if !root.slider-active {
+            root.slider-value = root.value;
+            if !root.edit-session-active {
+                root.edit-text = "" + root.value;
+            }
+        }
+    }
+
+    changed editor-has-focus => {
+        if root.editor-has-focus {
+            if !root.edit-session-active {
+                root.original-text = "" + root.value;
+                root.edit-text = "" + root.value;
+                root.text-dirty = false;
+                root.cancelled = false;
+                root.edit-session-active = true;
+            }
+        } else if root.edit-session-active {
+            if root.cancelled {
+                root.edit-text = root.original-text;
+                root.text-dirty = false;
+                root.cancelled = false;
+                root.edit-session-active = false;
+            } else if slider.has-focus {
+                root.edit-text = "" + root.value;
+                root.text-dirty = false;
+                root.edit-session-active = false;
+            } else if root.text-dirty {
+                if root.committed(root.edit-text) {
+                    root.edit-text = "" + root.value;
+                    root.original-text = root.edit-text;
+                    root.text-dirty = false;
+                    root.edit-session-active = false;
+                } else {
+                    editor.focus();
+                }
+            } else {
+                root.edit-session-active = false;
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text { text: root.label; color: #a0a0a0; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; horizontal-stretch: 1; }
+        HorizontalLayout {
+            spacing: 10px;
+            horizontal-stretch: 0;
+            max-width: self.preferred-width;
+            editor := LineEdit {
+                width: ControlMetrics.numeric-input-width;
+                horizontal-stretch: 0;
+                text <=> root.edit-text;
+                enabled: root.enabled;
+                input-type: InputType.number;
+                horizontal-alignment: center;
+                edited(text) => {
+                    root.edit-text = text;
+                    root.text-dirty = text != root.original-text;
+                    if text != "" {
+                        let preview = text.to-float();
+                        if preview >= root.minimum && preview <= root.maximum {
+                            root.slider-value = preview;
+                        }
+                    }
+                }
+                accepted(text) => {
+                    root.edit-text = text;
+                    root.text-dirty = text != root.original-text;
+                    if !root.text-dirty {
+                        root.edit-session-active = false;
+                        self.clear-focus();
+                    } else if root.committed(text) {
+                        root.edit-text = "" + root.value;
+                        root.original-text = root.edit-text;
+                        root.text-dirty = false;
+                        root.edit-session-active = false;
+                        self.clear-focus();
+                    }
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape && root.edit-session-active {
+                        root.cancelled = true;
+                        root.edit-text = root.original-text;
+                        root.slider-value = root.value;
+                        self.clear-focus();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            Text { text: root.unit; color: #8c8c8c; font-size: 11px; vertical-alignment: center; }
+        }
+    }
+    slider := Slider {
+        minimum: root.minimum;
+        maximum: root.maximum;
+        step: root.step;
+        value <=> root.slider-value;
+        enabled: root.enabled;
+        changed(value) => {
+            root.slider-active = true;
+            root.edit-session-active = false;
+            root.text-dirty = false;
+            root.cancelled = false;
+            let raw = Math.round(value);
+            root.previewed(raw);
+            if !root.edit-session-active {
+                let displayed = root.step > 0
+                    ? Math.min(root.maximum, Math.max(root.minimum, root.minimum + Math.round((raw - root.minimum) / root.step) * root.step))
+                    : raw;
+                root.edit-text = "" + displayed;
+            }
+        }
+        released(value) => {
+            let raw = Math.round(value);
+            let finalized = root.step > 0
+                ? Math.min(root.maximum, Math.max(root.minimum, root.minimum + Math.round((raw - root.minimum) / root.step) * root.step))
+                : raw;
+            root.slider-active = false;
+            root.slider-value = finalized;
+            root.edit-text = "" + finalized;
+            root.committed("" + finalized);
+        }
+    }
+    HorizontalLayout {
+        Text { text: root.minimum; color: #777777; font-size: 10px; horizontal-alignment: left; }
+        Text { text: root.maximum; color: #777777; font-size: 10px; horizontal-alignment: right; }
+    }
+}
+

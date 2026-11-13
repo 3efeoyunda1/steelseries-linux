@@ -2,7 +2,7 @@ Source: steelseries-linux
 Section: utils
 Priority: optional
 Maintainer: 3efeoyunda1 <3efeoyunda1@users.noreply.github.com>
-Build-Depends: debhelper-compat (= 13), cargo, rustc, pkg-config, libudev-dev
+Build-Depends: debhelper-compat (= 13), cargo, rustc, pkg-config, libudev-dev, libfontconfig1-dev, libfreetype6-dev
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://github.com/3efeoyunda1/steelseries-linux
@@ -18,7 +18,7 @@ Description: Linux configuration CLI for supported SteelSeries devices
 
 Package: steelseries-linux-gui
 Architecture: any
-Depends: steelseries-linux (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Depends: steelseries-linux (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}, libfontconfig1, libwayland-client0, libxkbcommon0, libx11-6, libxcursor1, libxi6, libxrandr2
 Description: Graphical application for SteelSeries Linux
  SteelSeries Linux GUI provides an optional graphical interface for the
  steelseriesctl JSON API. Device access and validation remain in the
