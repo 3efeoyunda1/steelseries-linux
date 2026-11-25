@@ -1,19 +1,24 @@
-use std::{
-    convert::TryFrom,
-    ffi::CString,
-    time::{Duration, Instant},
+use std::time::{Duration, Instant};
+
+use crate::{Device, DeviceDriver, PollingState, usb::HidSession};
+
+pub use crate::Error;
+use crate::validation::{
+    AUTO_LOW_POWER_THRESHOLD, LOW_POWER_POLLING_RATES, MAX_DPI_STAGES, MIN_DPI_STAGES,
+    POLLING_RATES, SCROLL_JUMP_DELAY, SLEEP_TIMER, WIRED_POLLING_RATES, stage_id_to_index,
+    validate_auto_low_power_threshold, validate_dpi_value,
+};
+pub use crate::validation::{
+    auto_low_power_threshold, sleep_timer_from_minutes, validate_scroll_jump_delay,
+    validate_stage_id, validate_wired_polling_rate,
 };
 
-use hidapi::{HidApi, HidDevice};
-use thiserror::Error;
-
 use crate::device::{
-    AutoLowPowerThreshold, BatteryCapabilities, BatteryStatus, ConnectionType, DeviceCapabilities,
-    DeviceIdentity, DeviceModel, DpiCapabilities, DpiConfig, DpiStage, FeatureCapabilities,
-    LiftOffDistance, LiftOffDistanceCapabilities, LiftOffDistanceValueCapability,
-    LowPowerPollingRate, PhysicalDevice, PollingCapabilities, PollingConfig, PollingRate,
-    PowerCapabilities, PowerConfig, RangeCapabilities, RecommendedRange, ScrollJumpCapabilities,
-    ScrollJumpConfig, SleepTimer, SleepTimerCapabilities, WirelessFeatureCapabilities,
+    AutoLowPowerThreshold, BatteryCapabilities, BatteryStatus, DeviceCapabilities, DeviceIdentity,
+    DeviceModel, DpiCapabilities, DpiConfig, DpiStage, FeatureCapabilities, LiftOffDistance,
+    LiftOffDistanceCapabilities, LiftOffDistanceValueCapability, LowPowerPollingRate,
+    PhysicalDevice, PollingCapabilities, PollingConfig, PollingRate, PowerCapabilities,
+    PowerConfig, ScrollJumpCapabilities, ScrollJumpConfig, SleepTimer, WirelessFeatureCapabilities,
     WirelessFeatures,
 };
 
@@ -49,194 +54,6 @@ const WIRELESS_FEATURES_RESERVED_SIZE: usize = REPORT_SIZE - WIRELESS_FEATURES_R
 const SCROLL_JUMP_RESERVED_OFFSET: usize = 4;
 const SCROLL_JUMP_RESERVED_SIZE: usize = REPORT_SIZE - SCROLL_JUMP_RESERVED_OFFSET;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndpointKind {
-    Receiver2_4Ghz,
-    Wired,
-}
-
-struct IdentifiedEndpoint<T> {
-    identity: DeviceIdentity,
-    kind: EndpointKind,
-    endpoint: T,
-}
-
-struct EndpointPair<T> {
-    identity: DeviceIdentity,
-    wired: Option<T>,
-    receiver: Option<T>,
-}
-
-impl<T> EndpointPair<T> {
-    fn physical_device(&self) -> PhysicalDevice {
-        PhysicalDevice {
-            model: DeviceModel::Aerox3WirelessGen2,
-            identity: self.identity.clone(),
-            active_connection: if self.wired.is_some() {
-                ConnectionType::Wired
-            } else {
-                ConnectionType::Wireless2_4Ghz
-            },
-            wired_endpoint_available: self.wired.is_some(),
-            receiver_endpoint_available: self.receiver.is_some(),
-        }
-    }
-
-    fn into_selected_endpoint(self) -> T {
-        self.wired
-            .or(self.receiver)
-            .expect("endpoint pair is nonempty")
-    }
-}
-
-struct EndpointDiscovery<T> {
-    pairs: Vec<EndpointPair<T>>,
-    supported_usb_present: bool,
-    config_interface_present: bool,
-    unlinked_receiver_present: bool,
-    first_error: Option<Error>,
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(
-        "SteelSeries Aerox 3 Wireless Gen 2 is not connected over wired USB or a linked 2.4 GHz receiver"
-    )]
-    DeviceNotConnected,
-    #[error(
-        "SteelSeries Aerox 3 Wireless Gen 2 USB endpoint was found, but configuration HID interface 3 was not"
-    )]
-    InterfaceNotFound,
-    #[error(
-        "multiple supported SteelSeries devices are connected:{available}\n\nSpecify one with --device <ID>."
-    )]
-    MultipleDevices { available: String },
-    #[error("no usable SteelSeries device with ID {requested} was found.{available}")]
-    RequestedDeviceNotFound {
-        requested: String,
-        available: String,
-    },
-    #[error("Aerox 3 Wireless Gen 2 receiver found, but the mouse is not connected over 2.4 GHz")]
-    ReceiverLinkUnavailable,
-    #[error("failed to initialize HID access: {0}")]
-    HidInitialization(#[source] hidapi::HidError),
-    #[error("failed to open SteelSeries Aerox 3 Wireless Gen 2 configuration interface: {0}")]
-    Open(#[source] hidapi::HidError),
-    #[error(
-        "failed to open SteelSeries Aerox 3 Wireless Gen 2 configuration interface: {source}\n\nSteelSeries Linux udev permissions may not be installed or active.\nInstall the project's udev rules and reconnect the device."
-    )]
-    OpenPermissionDenied {
-        #[source]
-        source: hidapi::HidError,
-    },
-    #[error("failed to write HID command 0x{command:02x}: {source}")]
-    Write {
-        command: u8,
-        #[source]
-        source: hidapi::HidError,
-    },
-    #[error("HID command 0x{command:02x} wrote {actual} bytes; expected {expected}")]
-    ShortWrite {
-        command: u8,
-        expected: usize,
-        actual: usize,
-    },
-    #[error("timed out waiting for response 0x{expected:02x}{observed}")]
-    ReadTimeout { expected: u8, observed: String },
-    #[error("failed to read response to HID command 0x{command:02x}: {source}")]
-    Read {
-        command: u8,
-        #[source]
-        source: hidapi::HidError,
-    },
-    #[error(
-        "malformed response to command 0x{command:02x}: expected at least {expected} bytes, received {actual}"
-    )]
-    MalformedResponse {
-        command: u8,
-        expected: usize,
-        actual: usize,
-    },
-    #[error("unexpected response command byte: expected 0x{expected:02x}, received 0x{actual:02x}")]
-    UnexpectedCommand { expected: u8, actual: u8 },
-    #[error("DPI configuration must contain between 1 and 5 stages (received {0})")]
-    InvalidDpiStageCount(usize),
-    #[error("{axis}-axis DPI {value} is invalid; DPI must be between 50 and 26000 in steps of 50")]
-    InvalidDpiValue {
-        axis: &'static str,
-        value: u16,
-        stage: Option<usize>,
-    },
-    #[error("active DPI stage index {active} is outside the {stage_count} configured stages")]
-    InvalidDpiActiveIndex { active: usize, stage_count: usize },
-    #[error("stage ID {0} is outside the supported range 1..=5")]
-    InvalidStageId(usize),
-    #[error(
-        "stage ID {stage_id} is not configured; current configuration contains {stage_count} stages"
-    )]
-    StageNotConfigured { stage_id: usize, stage_count: usize },
-    #[error("unknown lift-off-distance protocol value 0x{0:02x}; expected 0x00 or 0x01")]
-    UnknownLiftOffDistance(u8),
-    #[error("unknown polling-rate protocol code 0x{0:02x}")]
-    UnknownPollingCode(u8),
-    #[error("unsupported polling rate {0} Hz; expected 125, 250, 500, 1000, 2000, or 4000 Hz")]
-    UnsupportedPollingRate(u16),
-    #[error("wired polling rate {value} Hz is not supported; expected 125, 250, 500, or 1000 Hz")]
-    WiredPollingTooHigh { value: u16 },
-    #[error("unknown low-power polling protocol code 0x{0:02x}")]
-    UnknownLowPowerPollingCode(u8),
-    #[error("unsupported low-power polling rate {0} Hz; expected 125, 250, or 500 Hz")]
-    UnsupportedLowPowerPollingRate(u16),
-    #[error("invalid {field} state 0x{value:02x}; expected 0x00 or 0x01")]
-    InvalidPowerBoolean { field: &'static str, value: u8 },
-    #[error("Auto Low Power threshold must be between 5% and 25% (received {0}%)")]
-    InvalidAutoLowPowerThreshold(u8),
-    #[error("sleep timer must be at least 1 minute; zero/off encoding is not supported")]
-    SleepTimerZero,
-    #[error("sleep timer is too large. Maximum encodable value is 71582 minutes")]
-    SleepTimerTooLarge,
-    #[error("invalid sleep timer value {0} ms; zero/off encoding is not supported")]
-    InvalidSleepTimerMilliseconds(u32),
-    #[error("invalid {field} state 0x{value:02x}; expected 0x00 or 0x01")]
-    InvalidWirelessFeatureBoolean { field: &'static str, value: u8 },
-    #[error("invalid Scroll Jump Protection state 0x{0:02x}; expected 0x00 or 0x01")]
-    InvalidScrollJumpEnabled(u8),
-    #[error(
-        "unsupported Scroll Jump Protection delay {0} ms; expected 100-1500 ms in 100 ms steps"
-    )]
-    InvalidScrollJumpDelay(u16),
-    #[error("malformed battery response: invalid charging state 0x{0:02x}; expected 0x00 or 0x01")]
-    InvalidBatteryChargingState(u8),
-    #[error(
-        "malformed battery response: invalid percentage {0}; expected 0..=100 or unavailable marker 0xff"
-    )]
-    InvalidBatteryPercentage(u8),
-    #[error("device identity response is empty")]
-    EmptyDeviceIdentity,
-    #[error("malformed device identity response: missing zero terminator")]
-    UnterminatedDeviceIdentity,
-    #[error("malformed device identity response: identity is not ASCII")]
-    InvalidDeviceIdentity,
-    #[error("invalid receiver link state 0x{0:02x}; expected 0x00 or 0x01")]
-    InvalidReceiverLinkState(u8),
-}
-
-impl TryFrom<u16> for PollingRate {
-    type Error = Error;
-
-    fn try_from(hz: u16) -> Result<Self, Self::Error> {
-        match hz {
-            125 => Ok(Self::Hz125),
-            250 => Ok(Self::Hz250),
-            500 => Ok(Self::Hz500),
-            1000 => Ok(Self::Hz1000),
-            2000 => Ok(Self::Hz2000),
-            4000 => Ok(Self::Hz4000),
-            _ => Err(Error::UnsupportedPollingRate(hz)),
-        }
-    }
-}
-
 impl TryFrom<u8> for PollingRate {
     type Error = Error;
 
@@ -262,19 +79,6 @@ impl From<PollingRate> for u8 {
             PollingRate::Hz500 => 0x03,
             PollingRate::Hz250 => 0x04,
             PollingRate::Hz125 => 0x05,
-        }
-    }
-}
-
-impl TryFrom<u16> for LowPowerPollingRate {
-    type Error = Error;
-
-    fn try_from(hz: u16) -> Result<Self, Self::Error> {
-        match hz {
-            125 => Ok(Self::Hz125),
-            250 => Ok(Self::Hz250),
-            500 => Ok(Self::Hz500),
-            _ => Err(Error::UnsupportedLowPowerPollingRate(hz)),
         }
     }
 }
@@ -324,7 +128,7 @@ impl From<LiftOffDistance> for u8 {
 }
 
 pub struct Aerox3WirelessGen2 {
-    device: HidDevice,
+    session: HidSession,
     physical_device: Option<PhysicalDevice>,
 }
 
@@ -335,7 +139,9 @@ impl Aerox3WirelessGen2 {
             min: 50,
             max: 26_000,
             step: 50,
-            max_stages: 5,
+            min_stages: MIN_DPI_STAGES,
+            max_stages: MAX_DPI_STAGES,
+            active_stage_selection: true,
             independent_axes: true,
         },
         lod: LiftOffDistanceCapabilities {
@@ -356,20 +162,8 @@ impl Aerox3WirelessGen2 {
         },
         polling: PollingCapabilities {
             supported: true,
-            wireless: &[
-                PollingRate::Hz125,
-                PollingRate::Hz250,
-                PollingRate::Hz500,
-                PollingRate::Hz1000,
-                PollingRate::Hz2000,
-                PollingRate::Hz4000,
-            ],
-            wired: &[
-                PollingRate::Hz125,
-                PollingRate::Hz250,
-                PollingRate::Hz500,
-                PollingRate::Hz1000,
-            ],
+            wireless: POLLING_RATES,
+            wired: WIRED_POLLING_RATES,
         },
         battery: BatteryCapabilities {
             supported: true,
@@ -378,23 +172,10 @@ impl Aerox3WirelessGen2 {
         power: PowerCapabilities {
             supported: true,
             low_power_mode: true,
-            low_power_polling: &[
-                LowPowerPollingRate::Hz125,
-                LowPowerPollingRate::Hz250,
-                LowPowerPollingRate::Hz500,
-            ],
-            sleep_timer: SleepTimerCapabilities {
-                min: 1,
-                max: 71_582,
-                step: 1,
-                recommended_range: Some(RecommendedRange { min: 5, max: 20 }),
-            },
+            low_power_polling: LOW_POWER_POLLING_RATES,
+            sleep_timer: SLEEP_TIMER,
             auto_low_power_supported: true,
-            auto_low_power_threshold: RangeCapabilities {
-                min: 5,
-                max: 25,
-                step: 1,
-            },
+            auto_low_power_threshold: AUTO_LOW_POWER_THRESHOLD,
         },
         wireless_features: WirelessFeatureCapabilities {
             wireless_stability: FeatureCapabilities { supported: true },
@@ -402,12 +183,9 @@ impl Aerox3WirelessGen2 {
         },
         scroll_jump: ScrollJumpCapabilities {
             supported: true,
-            delay: RangeCapabilities {
-                min: 100,
-                max: 1_500,
-                step: 100,
-            },
+            delay: SCROLL_JUMP_DELAY,
         },
+        commit: true,
     };
 
     pub fn open() -> Result<Self, Error> {
@@ -415,27 +193,15 @@ impl Aerox3WirelessGen2 {
     }
 
     pub fn open_selected(requested_identity: Option<&str>) -> Result<Self, Error> {
-        let api = HidApi::new().map_err(Error::HidInitialization)?;
-        let discovery = Self::discover_with_api(&api);
+        Device::select_model(Some(DeviceModel::Aerox3WirelessGen2), requested_identity)?
+            .open_wireless()
+    }
 
-        if discovery.pairs.is_empty() {
-            if discovery.supported_usb_present && !discovery.config_interface_present {
-                return Err(Error::InterfaceNotFound);
-            }
-            if let Some(error) = discovery.first_error {
-                return Err(error);
-            }
-            if requested_identity.is_none() && discovery.unlinked_receiver_present {
-                return Err(Error::ReceiverLinkUnavailable);
-            }
+    pub(crate) fn new(session: HidSession, physical_device: Option<PhysicalDevice>) -> Self {
+        Self {
+            session,
+            physical_device,
         }
-
-        let pair = select_endpoint_pair(discovery.pairs, requested_identity)?;
-        let physical_device = pair.physical_device();
-        Ok(Self {
-            device: pair.into_selected_endpoint(),
-            physical_device: Some(physical_device),
-        })
     }
 
     #[must_use]
@@ -451,23 +217,7 @@ impl Aerox3WirelessGen2 {
     }
 
     pub fn discover() -> Result<Vec<PhysicalDevice>, Error> {
-        let api = HidApi::new().map_err(Error::HidInitialization)?;
-        let discovery = Self::discover_with_api(&api);
-
-        if discovery.pairs.is_empty() {
-            if discovery.supported_usb_present && !discovery.config_interface_present {
-                return Err(Error::InterfaceNotFound);
-            }
-            if let Some(error) = discovery.first_error {
-                return Err(error);
-            }
-        }
-
-        Ok(discovery
-            .pairs
-            .iter()
-            .map(EndpointPair::physical_device)
-            .collect())
+        Device::discover_model(Some(DeviceModel::Aerox3WirelessGen2))
     }
 
     /// Returns whether at least one usable physical mouse is discoverable.
@@ -475,71 +225,11 @@ impl Aerox3WirelessGen2 {
         Ok(!Self::discover()?.is_empty())
     }
 
-    fn discover_with_api(api: &HidApi) -> EndpointDiscovery<HidDevice> {
-        let mut supported_usb_present = false;
-        let mut config_interface_present = false;
-        let mut candidates: Vec<(EndpointKind, CString)> = Vec::new();
-
-        for info in api.device_list() {
-            let Some(kind) = supported_endpoint_kind(info.vendor_id(), info.product_id()) else {
-                continue;
-            };
-            supported_usb_present = true;
-            if info.interface_number() == CONFIG_INTERFACE {
-                config_interface_present = true;
-                candidates.push((kind, info.path().to_owned()));
-            }
-        }
-
-        let mut identified = Vec::new();
-        let mut unlinked_receiver_present = false;
-        let mut first_error = None;
-
-        for (kind, path) in candidates {
-            let device = match api.open_path(path.as_c_str()) {
-                Ok(device) => device,
-                Err(error) => {
-                    first_error.get_or_insert_with(|| open_error(error));
-                    continue;
-                }
-            };
-            let endpoint = Self {
-                device,
-                physical_device: None,
-            };
-
-            if kind == EndpointKind::Receiver2_4Ghz {
-                match endpoint.get_receiver_link_active() {
-                    Ok(false) => {
-                        unlinked_receiver_present = true;
-                        continue;
-                    }
-                    Ok(true) => {}
-                    Err(error) => {
-                        first_error.get_or_insert(error);
-                        continue;
-                    }
-                }
-            }
-
-            match endpoint.get_device_identity() {
-                Ok(identity) => identified.push(IdentifiedEndpoint {
-                    identity,
-                    kind,
-                    endpoint: endpoint.device,
-                }),
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-
-        EndpointDiscovery {
-            pairs: group_identified_endpoints(identified),
-            supported_usb_present,
-            config_interface_present,
-            unlinked_receiver_present,
-            first_error,
+    pub(crate) fn probe_identity(&self) -> Result<Option<DeviceIdentity>, Error> {
+        match self.get_device_identity() {
+            Ok(identity) => Ok(Some(identity)),
+            Err(Error::EmptyDeviceIdentity) => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -551,7 +241,7 @@ impl Aerox3WirelessGen2 {
         parse_device_identity_response(&response)
     }
 
-    fn get_receiver_link_active(&self) -> Result<bool, Error> {
+    pub(crate) fn get_receiver_link_active(&self) -> Result<bool, Error> {
         let response = self.send_command_and_expect(
             command_report(CMD_GET_RECEIVER_LINK),
             CMD_GET_RECEIVER_LINK,
@@ -751,6 +441,7 @@ impl Aerox3WirelessGen2 {
         let mut response = [0_u8; REPORT_SIZE];
         let timeout_ms = i32::try_from(timeout.as_millis().max(1)).unwrap_or(i32::MAX);
         let read = self
+            .session
             .device
             .read_timeout(&mut response, timeout_ms)
             .map_err(|source| Error::Read {
@@ -775,6 +466,7 @@ impl Aerox3WirelessGen2 {
         let mut hid_report = [0_u8; WRITE_SIZE];
         hid_report[1..].copy_from_slice(report);
         let written = self
+            .session
             .device
             .write(&hid_report)
             .map_err(|source| Error::Write { command, source })?;
@@ -789,122 +481,105 @@ impl Aerox3WirelessGen2 {
     }
 }
 
-fn supported_endpoint_kind(vendor_id: u16, product_id: u16) -> Option<EndpointKind> {
-    if vendor_id != VENDOR_ID {
-        return None;
-    }
-    match product_id {
-        PID_RECEIVER => Some(EndpointKind::Receiver2_4Ghz),
-        PID_WIRED => Some(EndpointKind::Wired),
-        _ => None,
-    }
-}
-
-fn select_endpoint_pair<T>(
-    mut pairs: Vec<EndpointPair<T>>,
-    requested_identity: Option<&str>,
-) -> Result<EndpointPair<T>, Error> {
-    if let Some(requested) = requested_identity {
-        if let Some(index) = pairs
-            .iter()
-            .position(|pair| pair.identity.as_str() == requested)
-        {
-            return Ok(pairs.swap_remove(index));
-        }
-        return Err(Error::RequestedDeviceNotFound {
-            requested: requested.to_owned(),
-            available: available_identities_suffix(&pairs),
-        });
+impl DeviceDriver for Aerox3WirelessGen2 {
+    fn model(&self) -> DeviceModel {
+        DeviceModel::Aerox3WirelessGen2
     }
 
-    match pairs.len() {
-        0 => Err(Error::DeviceNotConnected),
-        1 => Ok(pairs.pop().expect("one endpoint pair exists")),
-        _ => Err(Error::MultipleDevices {
-            available: ambiguity_identity_list(&pairs),
-        }),
-    }
-}
-
-fn sorted_identities<T>(pairs: &[EndpointPair<T>]) -> Vec<&str> {
-    let mut identities: Vec<_> = pairs.iter().map(|pair| pair.identity.as_str()).collect();
-    identities.sort_unstable();
-    identities
-}
-
-fn ambiguity_identity_list<T>(pairs: &[EndpointPair<T>]) -> String {
-    sorted_identities(pairs)
-        .into_iter()
-        .map(|identity| format!("\n  {identity}"))
-        .collect()
-}
-
-fn available_identities_suffix<T>(pairs: &[EndpointPair<T>]) -> String {
-    if pairs.is_empty() {
-        return String::new();
-    }
-    let identities = sorted_identities(pairs)
-        .into_iter()
-        .map(|identity| format!("  {identity}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("\n\nAvailable device IDs:\n{identities}")
-}
-
-fn open_error(error: hidapi::HidError) -> Error {
-    if hid_error_is_permission_denied(&error) {
-        Error::OpenPermissionDenied { source: error }
-    } else {
-        Error::Open(error)
-    }
-}
-
-fn hid_error_is_permission_denied(error: &hidapi::HidError) -> bool {
-    match error {
-        hidapi::HidError::IoError { error } => error.kind() == std::io::ErrorKind::PermissionDenied,
-        hidapi::HidError::HidApiError { message } => {
-            let message = message.to_ascii_lowercase();
-            message.contains("permission denied") || message.contains("access denied")
-        }
-        _ => false,
-    }
-}
-
-fn group_identified_endpoints<T>(
-    endpoints: impl IntoIterator<Item = IdentifiedEndpoint<T>>,
-) -> Vec<EndpointPair<T>> {
-    let mut pairs: Vec<EndpointPair<T>> = Vec::new();
-
-    for endpoint in endpoints {
-        let IdentifiedEndpoint {
-            identity,
-            kind,
-            endpoint,
-        } = endpoint;
-        if let Some(pair) = pairs.iter_mut().find(|pair| pair.identity == identity) {
-            match kind {
-                EndpointKind::Wired => {
-                    pair.wired.get_or_insert(endpoint);
-                }
-                EndpointKind::Receiver2_4Ghz => {
-                    pair.receiver.get_or_insert(endpoint);
-                }
-            }
-            continue;
-        }
-
-        let (wired, receiver) = match kind {
-            EndpointKind::Wired => (Some(endpoint), None),
-            EndpointKind::Receiver2_4Ghz => (None, Some(endpoint)),
-        };
-        pairs.push(EndpointPair {
-            identity,
-            wired,
-            receiver,
-        });
+    fn replace_dpi_stages(&self, values: &[(u16, u16)]) -> Result<DpiConfig, Error> {
+        validate_dpi_values(values)?;
+        let config = config_from_dpi_values(&self.get_dpi_config()?, values)?;
+        self.set_dpi_config(&config)?;
+        Ok(config)
     }
 
-    pairs
+    fn get_polling_config(&self) -> Result<PollingState, Error> {
+        let config = self.get_polling_config()?;
+        Ok(PollingState {
+            wired: config.wired,
+            wireless: Some(config.wireless),
+        })
+    }
+
+    fn get_dpi_config(&self) -> Result<DpiConfig, Error> {
+        Self::get_dpi_config(self)
+    }
+
+    fn set_dpi_config(&self, config: &DpiConfig) -> Result<(), Error> {
+        Self::set_dpi_config(self, config)
+    }
+
+    fn set_active_dpi_stage(&self, stage_id: usize) -> Result<(), Error> {
+        Self::set_active_dpi_stage(self, stage_id)
+    }
+
+    fn commit(&self) -> Result<(), Error> {
+        Self::commit(self)
+    }
+
+    fn set_lift_off_distance(&self, stage_id: usize, lod: LiftOffDistance) -> Result<(), Error> {
+        Self::set_lift_off_distance(self, stage_id, lod)
+    }
+
+    fn set_wired_polling(&self, rate: PollingRate) -> Result<(), Error> {
+        Self::set_wired_polling(self, rate)
+    }
+
+    fn set_wireless_polling(&self, rate: PollingRate) -> Result<(), Error> {
+        Self::set_wireless_polling(self, rate)
+    }
+
+    fn get_battery_status(&self) -> Result<BatteryStatus, Error> {
+        Self::get_battery_status(self)
+    }
+
+    fn get_power_config(&self) -> Result<PowerConfig, Error> {
+        Self::get_power_config(self)
+    }
+
+    fn set_low_power_enabled(&self, enabled: bool) -> Result<(), Error> {
+        Self::set_low_power_enabled(self, enabled)
+    }
+
+    fn set_low_power_polling(&self, rate: LowPowerPollingRate) -> Result<(), Error> {
+        Self::set_low_power_polling(self, rate)
+    }
+
+    fn set_auto_low_power_enabled(&self, enabled: bool) -> Result<(), Error> {
+        Self::set_auto_low_power_enabled(self, enabled)
+    }
+
+    fn set_auto_low_power_threshold(&self, threshold: AutoLowPowerThreshold) -> Result<(), Error> {
+        Self::set_auto_low_power_threshold(self, threshold)
+    }
+
+    fn set_sleep_timer(&self, timer: SleepTimer) -> Result<(), Error> {
+        Self::set_sleep_timer(self, timer)
+    }
+
+    fn get_wireless_features(&self) -> Result<WirelessFeatures, Error> {
+        Self::get_wireless_features(self)
+    }
+
+    fn set_wireless_stability(&self, enabled: bool) -> Result<(), Error> {
+        Self::set_wireless_stability(self, enabled)
+    }
+
+    fn set_bluetooth_smoothing(&self, enabled: bool) -> Result<(), Error> {
+        Self::set_bluetooth_smoothing(self, enabled)
+    }
+
+    fn get_scroll_jump_config(&self) -> Result<ScrollJumpConfig, Error> {
+        Self::get_scroll_jump_config(self)
+    }
+
+    fn set_scroll_jump_enabled(&self, enabled: bool) -> Result<(), Error> {
+        Self::set_scroll_jump_enabled(self, enabled)
+    }
+
+    fn set_scroll_jump_delay(&self, delay_ms: u16) -> Result<(), Error> {
+        Self::set_scroll_jump_delay(self, delay_ms)
+    }
 }
 
 fn wait_for_expected_response<F>(
@@ -1039,33 +714,25 @@ fn validate_dpi_config(config: &DpiConfig) -> Result<(), Error> {
         });
     }
     for (index, stage) in config.stages.iter().enumerate() {
-        validate_dpi_value("X", stage.x, Some(index + 1))?;
-        validate_dpi_value("Y", stage.y, Some(index + 1))?;
-    }
-    Ok(())
-}
-
-fn validate_dpi_value(axis: &'static str, value: u16, stage: Option<usize>) -> Result<(), Error> {
-    let capabilities = Aerox3WirelessGen2::CAPABILITIES.dpi;
-    if value < capabilities.min
-        || value > capabilities.max
-        || !value.is_multiple_of(capabilities.step)
-    {
-        return Err(Error::InvalidDpiValue { axis, value, stage });
+        validate_dpi_value(
+            Aerox3WirelessGen2::CAPABILITIES.dpi,
+            "X",
+            stage.x,
+            index + 1,
+        )?;
+        validate_dpi_value(
+            Aerox3WirelessGen2::CAPABILITIES.dpi,
+            "Y",
+            stage.y,
+            index + 1,
+        )?;
     }
     Ok(())
 }
 
 /// Validates stage count and both axes against this model's DPI capabilities.
 pub fn validate_dpi_values(dpis: &[(u16, u16)]) -> Result<(), Error> {
-    if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&dpis.len()) {
-        return Err(Error::InvalidDpiStageCount(dpis.len()));
-    }
-    for (index, &(x, y)) in dpis.iter().enumerate() {
-        validate_dpi_value("X", x, Some(index + 1))?;
-        validate_dpi_value("Y", y, Some(index + 1))?;
-    }
-    Ok(())
+    crate::validation::validate_dpi_values(DeviceModel::Aerox3WirelessGen2, dpis)
 }
 
 fn parse_dpi_response(response: &[u8]) -> Result<DpiConfig, Error> {
@@ -1155,17 +822,6 @@ fn configured_stage_index(current: &DpiConfig, stage_id: usize) -> Result<usize,
         });
     }
     Ok(index)
-}
-
-pub fn validate_stage_id(stage_id: usize) -> Result<(), Error> {
-    stage_id_to_index(stage_id).map(|_| ())
-}
-
-fn stage_id_to_index(stage_id: usize) -> Result<usize, Error> {
-    if !(1..=Aerox3WirelessGen2::CAPABILITIES.dpi.max_stages).contains(&stage_id) {
-        return Err(Error::InvalidStageId(stage_id));
-    }
-    Ok(stage_id - 1)
 }
 
 /// Returns a copy with only the active index changed; stage values remain exact.
@@ -1346,46 +1002,6 @@ pub fn scroll_jump_with_delay(
     Ok(current)
 }
 
-pub fn validate_scroll_jump_delay(delay_ms: u16) -> Result<(), Error> {
-    let capabilities = Aerox3WirelessGen2::CAPABILITIES.scroll_jump;
-    if !(capabilities.delay.min..=capabilities.delay.max).contains(&delay_ms)
-        || !delay_ms.is_multiple_of(capabilities.delay.step)
-    {
-        return Err(Error::InvalidScrollJumpDelay(delay_ms));
-    }
-    Ok(())
-}
-
-pub fn auto_low_power_threshold(percent: u8) -> Result<AutoLowPowerThreshold, Error> {
-    validate_auto_low_power_threshold(percent)?;
-    Ok(AutoLowPowerThreshold::new(percent))
-}
-
-fn validate_auto_low_power_threshold(percent: u8) -> Result<(), Error> {
-    let capabilities = Aerox3WirelessGen2::CAPABILITIES.power;
-    if !(capabilities.auto_low_power_threshold.min..=capabilities.auto_low_power_threshold.max)
-        .contains(&percent)
-    {
-        return Err(Error::InvalidAutoLowPowerThreshold(percent));
-    }
-    Ok(())
-}
-
-pub fn sleep_timer_from_minutes(minutes: u64) -> Result<SleepTimer, Error> {
-    let capabilities = Aerox3WirelessGen2::CAPABILITIES.power;
-    if minutes < capabilities.sleep_timer.min {
-        return Err(Error::SleepTimerZero);
-    }
-    if minutes > capabilities.sleep_timer.max {
-        return Err(Error::SleepTimerTooLarge);
-    }
-    let milliseconds = minutes
-        .checked_mul(60_000)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or(Error::SleepTimerTooLarge)?;
-    Ok(SleepTimer::from_milliseconds(milliseconds))
-}
-
 #[must_use]
 pub fn power_with_low_power_enabled(mut current: PowerConfig, enabled: bool) -> PowerConfig {
     current.low_power_enabled = enabled;
@@ -1478,19 +1094,6 @@ pub fn polling_with_wired(
     })
 }
 
-/// Validates the Aerox 3 Wireless Gen 2's wired-mode polling limit.
-pub fn validate_wired_polling_rate(rate: PollingRate) -> Result<(), Error> {
-    if Aerox3WirelessGen2::CAPABILITIES
-        .polling
-        .wired
-        .contains(&rate)
-    {
-        Ok(())
-    } else {
-        Err(Error::WiredPollingTooHigh { value: rate.hz() })
-    }
-}
-
 fn ensure_response_header(response: &[u8], command: u8, minimum: usize) -> Result<(), Error> {
     if response.len() < minimum {
         return Err(Error::MalformedResponse {
@@ -1531,6 +1134,15 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        ConnectionType, RecommendedRange,
+        error::hid_error_is_permission_denied,
+        manager::{
+            EndpointKind, EndpointPair, IdentifiedEndpoint, group_identified_endpoints,
+            select_endpoint_pair,
+        },
+    };
+
     use super::*;
 
     fn protocol_report(command: u8) -> [u8; REPORT_SIZE] {
@@ -1622,6 +1234,7 @@ mod tests {
         endpoint: T,
     ) -> IdentifiedEndpoint<T> {
         IdentifiedEndpoint {
+            model: DeviceModel::Aerox3WirelessGen2,
             identity: identity(identity_value),
             kind,
             endpoint,
@@ -1630,6 +1243,7 @@ mod tests {
 
     fn selectable_pair(identity_value: &str) -> EndpointPair<&'static str> {
         EndpointPair {
+            model: DeviceModel::Aerox3WirelessGen2,
             identity: identity(identity_value),
             wired: Some("wired"),
             receiver: None,
@@ -2719,7 +2333,7 @@ mod tests {
         ];
         let supported_count = endpoints
             .into_iter()
-            .filter_map(|(vendor, product)| supported_endpoint_kind(vendor, product))
+            .filter_map(|(vendor, product)| DeviceModel::from_usb_id(vendor, product))
             .count();
 
         assert_eq!(supported_count, 1);
@@ -2868,7 +2482,7 @@ mod tests {
 
         assert!(hid_error_is_permission_denied(&error));
         assert!(matches!(
-            open_error(error),
+            Error::open_error(error),
             Error::OpenPermissionDenied { .. }
         ));
     }
@@ -2880,7 +2494,7 @@ mod tests {
         };
 
         assert!(hid_error_is_permission_denied(&error));
-        let error = open_error(error);
+        let error = Error::open_error(error);
         assert!(matches!(error, Error::OpenPermissionDenied { .. }));
         assert!(
             error
@@ -2896,6 +2510,6 @@ mod tests {
         };
 
         assert!(!hid_error_is_permission_denied(&error));
-        assert!(matches!(open_error(error), Error::Open(_)));
+        assert!(matches!(Error::open_error(error), Error::Open(_)));
     }
 }

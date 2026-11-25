@@ -40,6 +40,7 @@ steelseries-linux package.
 
 %build
 cargo build --release --locked -p steelseries-cli -p steelseries-gui
+STEELSERIESCTL_GENERATE_COMPLETIONS=target/completions target/release/steelseriesctl
 
 %check
 cargo test --workspace --locked
@@ -47,6 +48,12 @@ cargo test --workspace --locked
 %install
 install -Dm0755 target/release/steelseriesctl \
     %{buildroot}%{_bindir}/steelseriesctl
+install -Dm0644 target/completions/steelseriesctl \
+    %{buildroot}%{_datadir}/bash-completion/completions/steelseriesctl
+install -Dm0644 target/completions/_steelseriesctl \
+    %{buildroot}%{_datadir}/zsh/site-functions/_steelseriesctl
+install -Dm0644 target/completions/steelseriesctl.fish \
+    %{buildroot}%{_datadir}/fish/vendor_completions.d/steelseriesctl.fish
 install -Dm0644 udev/70-steelseries-linux.rules \
     %{buildroot}%{_udevrulesdir}/70-steelseries-linux.rules
 install -Dm0755 target/release/steelseries-linux-gui \
@@ -72,10 +79,13 @@ fi
 %license LICENSE
 %doc README.md
 %{_bindir}/steelseriesctl
+%{_datadir}/bash-completion/completions/steelseriesctl
+%{_datadir}/zsh/site-functions/_steelseriesctl
+%{_datadir}/fish/vendor_completions.d/steelseriesctl.fish
 %{_udevrulesdir}/70-steelseries-linux.rules
 
 %files gui
-%license LICENSE
+%license LICENSE crates/vendor/softbuffer/LICENSE-MIT
 %{_bindir}/steelseries-linux-gui
 %{_datadir}/applications/steelseries-linux-gui.desktop
 %{_datadir}/icons/hicolor/scalable/apps/steelseries-linux-gui.svg

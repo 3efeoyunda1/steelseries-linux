@@ -6,7 +6,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_REFRESH_INTERVAL_SECONDS: u64 = 60;
-pub const REFRESH_INTERVAL_OPTIONS: [u64; 5] = [15, 30, 60, 120, 300];
+pub const REFRESH_INTERVAL_OPTIONS: [u64; 6] = [5, 15, 30, 60, 120, 300];
+pub const LOW_BATTERY_OPTIONS: [u8; 3] = [20, 25, 30];
+pub const CRITICAL_BATTERY_OPTIONS: [u8; 3] = [5, 10, 15];
 const AUTOSTART_FILE_NAME: &str = "steelseries-linux-gui.desktop";
 const LEGACY_AUTOSTART_ENTRY: &str = "[Desktop Entry]\nType=Application\nName=SteelSeries Linux\nExec=steelseries-gui --autostart\nTerminal=false\n";
 const AUTOSTART_DESKTOP_ENTRY: &str = "[Desktop Entry]\nType=Application\nName=SteelSeries Linux\nExec=steelseries-linux-gui --autostart\nIcon=steelseries-linux-gui\nTerminal=false\n";
@@ -43,6 +45,9 @@ pub struct GuiSettings {
     pub tray_icon_theme: TrayIconTheme,
     pub refresh_interval_seconds: u64,
     pub start_at_login: bool,
+    pub battery_notifications: bool,
+    pub low_battery_threshold: u8,
+    pub critical_battery_threshold: u8,
     pub device_priority: Vec<String>,
     pub known_devices: Vec<KnownDevice>,
 }
@@ -54,6 +59,9 @@ impl Default for GuiSettings {
             tray_icon_theme: TrayIconTheme::Monochrome,
             refresh_interval_seconds: DEFAULT_REFRESH_INTERVAL_SECONDS,
             start_at_login: false,
+            battery_notifications: true,
+            low_battery_threshold: 25,
+            critical_battery_threshold: 10,
             device_priority: Vec::new(),
             known_devices: Vec::new(),
         }
@@ -62,6 +70,8 @@ impl Default for GuiSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KnownDevice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_supported: Option<bool>,
     pub id: String,
     pub name: String,
     pub model_key: String,
@@ -72,8 +82,22 @@ pub struct KnownDevice {
     pub device_type: Option<String>,
 }
 
+impl KnownDevice {
+    fn supports_battery(&self) -> bool {
+        // Older CLI responses and settings predate the capability field.
+        self.battery_supported
+            .unwrap_or(self.model_key == "aerox_3_wireless_gen2")
+    }
+}
+
 impl GuiSettings {
     pub fn normalize(&mut self) {
+        if !LOW_BATTERY_OPTIONS.contains(&self.low_battery_threshold) {
+            self.low_battery_threshold = 25;
+        }
+        if !CRITICAL_BATTERY_OPTIONS.contains(&self.critical_battery_threshold) {
+            self.critical_battery_threshold = 10;
+        }
         if !REFRESH_INTERVAL_OPTIONS.contains(&self.refresh_interval_seconds) {
             self.refresh_interval_seconds = DEFAULT_REFRESH_INTERVAL_SECONDS;
         }
@@ -81,10 +105,13 @@ impl GuiSettings {
             .sort_by(|left, right| left.id.cmp(&right.id));
         self.known_devices
             .dedup_by(|left, right| left.id == right.id);
-        self.device_priority
-            .retain(|id| self.known_devices.iter().any(|device| &device.id == id));
+        self.device_priority.retain(|id| {
+            self.known_devices
+                .iter()
+                .any(|device| &device.id == id && device.supports_battery())
+        });
         for device in &self.known_devices {
-            if !self.device_priority.contains(&device.id) {
+            if device.supports_battery() && !self.device_priority.contains(&device.id) {
                 self.device_priority.push(device.id.clone());
             }
         }
@@ -187,6 +214,7 @@ mod tests {
 
     fn device(id: &str) -> KnownDevice {
         KnownDevice {
+            battery_supported: Some(true),
             id: id.to_owned(),
             name: format!("Device {id}"),
             model_key: "model".to_owned(),
@@ -194,6 +222,62 @@ mod tests {
             last_seen_unix_seconds: Some(42),
             device_type: None,
         }
+    }
+
+    #[test]
+    fn legacy_settings_keep_saved_values_and_receive_notification_defaults() {
+        for interval in [15, 30, 60, 120, 300] {
+            let mut settings: GuiSettings = serde_json::from_value(serde_json::json!({
+                "refresh_interval_seconds": interval,
+                "tray_enabled": false,
+                "start_at_login": true,
+            }))
+            .unwrap();
+            settings.normalize();
+            assert_eq!(settings.refresh_interval_seconds, interval);
+            assert!(!settings.tray_enabled);
+            assert!(settings.start_at_login);
+            assert!(settings.battery_notifications);
+            assert_eq!(settings.low_battery_threshold, 25);
+            assert_eq!(settings.critical_battery_threshold, 10);
+        }
+    }
+
+    #[test]
+    fn all_intervals_and_notification_choices_round_trip() {
+        let path = temporary_file("notification-options");
+        for interval in REFRESH_INTERVAL_OPTIONS {
+            for low in LOW_BATTERY_OPTIONS {
+                for critical in CRITICAL_BATTERY_OPTIONS {
+                    let settings = GuiSettings {
+                        refresh_interval_seconds: interval,
+                        battery_notifications: false,
+                        low_battery_threshold: low,
+                        critical_battery_threshold: critical,
+                        ..GuiSettings::default()
+                    };
+                    settings.save(&path).unwrap();
+                    assert_eq!(GuiSettings::load(&path), settings);
+                }
+            }
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_thresholds_preserve_other_settings() {
+        let mut settings = GuiSettings {
+            low_battery_threshold: 0,
+            critical_battery_threshold: 100,
+            refresh_interval_seconds: 5,
+            battery_notifications: false,
+            ..GuiSettings::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.low_battery_threshold, 25);
+        assert_eq!(settings.critical_battery_threshold, 10);
+        assert_eq!(settings.refresh_interval_seconds, 5);
+        assert!(!settings.battery_notifications);
     }
 
     #[test]
@@ -252,7 +336,7 @@ mod tests {
         let path = temporary_file("invalid-interval");
         fs::write(
             &path,
-            r#"{"tray_enabled":false,"refresh_interval_seconds":0,"device_priority":["A"],"known_devices":[{"id":"A","name":"Device A","model_key":"model","last_connection":"wired"}]}"#,
+            r#"{"tray_enabled":false,"refresh_interval_seconds":0,"device_priority":["A"],"known_devices":[{"id":"A","name":"Device A","model_key":"aerox_3_wireless_gen2","last_connection":"wired"}]}"#,
         )
         .unwrap();
         let loaded = GuiSettings::load(&path);

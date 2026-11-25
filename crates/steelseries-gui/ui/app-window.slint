@@ -139,9 +139,24 @@ component DeviceCard inherits Rectangle {
     background: card-area.pressed ? #292929 : card-area.has-hover ? #252525 : #202020;
 
     HorizontalLayout {
-        padding: 18px;
-        spacing: 8px;
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 16px;
+        if root.device.model-key == "aerox_3_wired" || root.device.model-key == "aerox_3_wireless_gen2": Image {
+            width: 112px;
+            height: 112px;
+            horizontal-stretch: 0;
+            cross-axis-self-alignment: center;
+            source: root.device.model-key == "aerox_3_wired"
+                ? @image-url("../../../assets/devices/aerox_3_wired.png")
+                : @image-url("../../../assets/devices/aerox_3_wireless_gen2.png");
+            image-fit: contain;
+        }
         VerticalLayout {
+            height: 80px;
+            cross-axis-self-alignment: center;
             spacing: 7px;
             horizontal-stretch: 1;
             Text { text: root.device.name; color: #f4f4f4; font-size: 18px; font-weight: 600; }
@@ -295,6 +310,7 @@ component DpiSliderControl inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 10px;
+        max-height: self.preferred-height;
         Text { text: root.label; color: #a0a0a0; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; horizontal-stretch: 1; }
         HorizontalLayout {
             spacing: 10px;
@@ -407,7 +423,11 @@ export component AppWindow inherits Window {
     in-out property <[KnownDeviceItem]> known-devices;
     in-out property <bool> tray-enabled: true;
     in-out property <int> tray-icon-theme-index: 1;
-    in-out property <int> refresh-interval-index: 2;
+    in-out property <int> refresh-interval-index: 3;
+    in-out property <bool> battery-notifications: true;
+    in-out property <int> low-battery-index: 1;
+    in-out property <int> critical-battery-index: 1;
+    in property <string> app-version;
     in-out property <bool> start-at-login: false;
     in-out property <string> settings-error;
     in-out property <string> error-message;
@@ -451,6 +471,12 @@ export component AppWindow inherits Window {
     callback tray-enabled-changed;
     callback tray-icon-theme-selected(int);
     callback refresh-interval-selected(int);
+    callback battery-notifications-changed;
+    callback low-battery-selected(int);
+    callback critical-battery-selected(int);
+    callback about-requested;
+    callback about-back-requested;
+    callback about-link-requested(int);
     callback start-at-login-changed;
     callback priority-move-requested(int, int);
 
@@ -573,9 +599,28 @@ export component AppWindow inherits Window {
                             SelectControl {
                                 label: "Refresh interval";
                                 label-min-width: 140px;
-                                options: ["15 seconds", "30 seconds", "60 seconds", "120 seconds", "300 seconds"];
+                                options: ["5 seconds", "15 seconds", "30 seconds", "1 minute", "2 minutes", "5 minutes"];
                                 current-index: root.refresh-interval-index;
                                 selected(index) => { root.refresh-interval-selected(index); }
+                            }
+                            ToggleControl {
+                                label: "Battery notifications"; label-min-width: 140px;
+                                value: root.battery-notifications;
+                                toggled => { root.battery-notifications-changed(); }
+                            }
+                            SelectControl {
+                                label: "Low battery"; label-min-width: 140px;
+                                options: ["20%", "25%", "30%"];
+                                current-index: root.low-battery-index;
+                                enabled: root.battery-notifications;
+                                selected(index) => { root.low-battery-selected(index); }
+                            }
+                            SelectControl {
+                                label: "Critical battery"; label-min-width: 140px;
+                                options: ["5%", "10%", "15%"];
+                                current-index: root.critical-battery-index;
+                                enabled: root.battery-notifications;
+                                selected(index) => { root.critical-battery-selected(index); }
                             }
                             ToggleControl {
                                 label: "Start at login";
@@ -591,7 +636,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             padding: 14px; spacing: 9px;
                             Text { text: "Device priority"; color: #f0f0f0; font-size: 17px; font-weight: 600; }
-                            if root.known-devices.length == 0: Text { text: "No previously known devices."; color: #888888; font-size: 12px; }
+                            if root.known-devices.length == 0: Text { text: "No known devices with battery support."; color: #888888; font-size: 12px; }
                             for device[index] in root.known-devices: Rectangle {
                                 height: 50px; vertical-stretch: 0; border-radius: 6px; background: #222222;
                                 HorizontalLayout {
@@ -610,7 +655,68 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    Rectangle {
+                        height: 50px; vertical-stretch: 0;
+                        border-radius: 9px; border-width: 1px;
+                        border-color: about-touch.has-hover ? #e87524 : #323232;
+                        background: about-touch.has-hover ? #242424 : #1b1b1b;
+                        HorizontalLayout {
+                            padding: 14px; spacing: 12px;
+                            Rectangle {
+                                width: 18px; horizontal-stretch: 0; background: transparent;
+                                Image {
+                                    source: @image-url("../../../assets/icons/information.svg");
+                                    width: 18px; height: 18px;
+                                    y: (parent.height - self.height) / 2;
+                                    image-fit: contain;
+                                }
+                            }
+                            Text { text: "About SteelSeries Linux"; color: #e4e4e4; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                            Rectangle {
+                                width: 18px; horizontal-stretch: 0; background: transparent;
+                                Image {
+                                    source: @image-url("../../../assets/icons/chevron-right.svg");
+                                    width: 18px; height: 18px;
+                                    y: (parent.height - self.height) / 2;
+                                    image-fit: contain;
+                                }
+                            }
+                        }
+                        about-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.about-requested(); }
+                        }
+                    }
                 }
+            }
+        }
+
+        if root.view-state == "about": VerticalLayout {
+            spacing: 12px;
+            HorizontalLayout {
+                height: 32px;
+                Text { text: "About"; color: #eeeeee; font-size: 20px; font-weight: 600; vertical-alignment: center; }
+                Rectangle { background: transparent; horizontal-stretch: 1; }
+                AppButton { size: ButtonSize.toolbar; variant: ButtonVariant.toolbar; text: "←  Settings"; clicked => { root.about-back-requested(); } }
+            }
+            VerticalLayout {
+                padding: 24px; spacing: 14px; alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    Image { source: @image-url("../../../assets/app/steelseries-linux-gui.svg"); width: 80px; height: 80px; image-fit: contain; }
+                }
+                Text { text: "SteelSeries Linux"; color: #f0f0f0; font-size: 24px; font-weight: 700; horizontal-alignment: center; }
+                Text { text: "Unofficial SteelSeries device manager for Linux"; color: #a0a0a0; font-size: 14px; horizontal-alignment: center; }
+                Text { text: "Version " + root.app-version; color: #e87524; font-size: 14px; horizontal-alignment: center; }
+                Text { text: "Developer: 3efeoyunda1"; color: #c0c0c0; font-size: 13px; horizontal-alignment: center; }
+                Text { text: "License: MIT"; color: #c0c0c0; font-size: 13px; horizontal-alignment: center; }
+                HorizontalLayout {
+                    alignment: center; spacing: 12px;
+                    AppButton { variant: ButtonVariant.toolbar; text: "Source Code"; clicked => { root.about-link-requested(0); } }
+                    AppButton { variant: ButtonVariant.toolbar; text: "Releases"; clicked => { root.about-link-requested(1); } }
+                    AppButton { variant: ButtonVariant.toolbar; text: "Report an Issue"; clicked => { root.about-link-requested(2); } }
+                }
+                Text { text: "Not affiliated with or endorsed by SteelSeries."; color: #888888; font-size: 12px; horizontal-alignment: center; }
             }
         }
 
@@ -716,7 +822,8 @@ export component AppWindow inherits Window {
                                     Text { text: "DPI"; color: #f0f0f0; font-size: 17px; font-weight: 600; }
                                     if root.dpi-error != "": Text { text: root.dpi-error; color: #ef9b87; font-size: 11px; wrap: word-wrap; }
                                     for row[index] in root.dpi-rows: Rectangle {
-                                        min-height: row.separate ? 286px : 222px;
+                                        min-height: row.separate ? 286px
+                                            : (root.dashboard.dpi-independent-axes || root.dashboard.show-lod ? 222px : 0px);
                                         border-radius: 6px;
                                         border-width: row.active ? 1px : 0px;
                                         border-color: #d96f25;
@@ -802,7 +909,8 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                        VerticalLayout {
+                        if root.dashboard.show-power || root.dashboard.show-wireless-stability
+                            || root.dashboard.show-bluetooth-smoothing || root.dashboard.show-scroll-jump: VerticalLayout {
                             spacing: 14px;
                             alignment: start;
                             vertical-stretch: 0;

@@ -12,10 +12,25 @@ const BATTERY_GET_COMMAND: &str = "battery.get";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Device {
+    #[serde(default)]
+    pub battery_supported: Option<bool>,
     pub connection: String,
     pub id: String,
+    #[serde(default)]
+    pub id_source: String,
     pub model_key: String,
     pub name: String,
+}
+
+impl Device {
+    pub fn identity_label(&self) -> String {
+        let label = if self.id_source == "custom" {
+            "Custom ID"
+        } else {
+            "ID"
+        };
+        format!("{label}: {}", self.id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -136,14 +151,14 @@ pub struct UnitRange<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DeviceSnapshot {
     pub device: Device,
-    pub battery: BatteryState,
+    pub battery: Option<BatteryState>,
     pub dpi: DpiState,
-    pub lod: LodState,
+    pub lod: Option<LodState>,
     pub polling: PollingState,
-    pub power: PowerState,
-    pub wireless_stability: EnabledState,
-    pub bluetooth_smoothing: EnabledState,
-    pub scroll_jump: ScrollJumpState,
+    pub power: Option<PowerState>,
+    pub wireless_stability: Option<EnabledState>,
+    pub bluetooth_smoothing: Option<EnabledState>,
+    pub scroll_jump: Option<ScrollJumpState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -178,11 +193,11 @@ pub struct LodStageState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PollingState {
-    pub wireless_hz: u16,
+    pub wireless_hz: Option<u16>,
     pub wired_hz: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct PowerState {
     pub low_power_enabled: bool,
     pub low_power_polling_hz: u16,
@@ -197,7 +212,7 @@ pub struct EnabledState {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ScrollJumpState {
     pub enabled: bool,
     pub delay_ms: u16,
@@ -461,6 +476,10 @@ impl CliClientError {
             .map(|allowed| format!("Allowed values: {allowed}."))
     }
 
+    pub fn is_unsupported_feature(&self) -> bool {
+        matches!(self, Self::CommandFailed(failure) if failure.code == "unsupported_feature")
+    }
+
     pub fn is_device_not_found(&self) -> bool {
         matches!(self, Self::CommandFailed(failure) if failure.code == "device_not_found")
     }
@@ -701,6 +720,7 @@ mod tests {
         assert_eq!(data.devices.len(), 1);
         assert_eq!(data.devices[0].connection, "wired");
         assert_eq!(data.devices[0].model_key, "aerox_3_wireless_gen2");
+        assert_eq!(data.devices[0].identity_label(), "ID: 6271700431492500250");
     }
 
     #[test]
@@ -752,17 +772,80 @@ mod tests {
             DEVICE_SNAPSHOT_COMMAND,
         )
         .unwrap();
-        assert_eq!(snapshot.battery.percentage, Some(82));
-        assert_eq!(snapshot.battery.charging, Some(true));
+        let battery = snapshot.battery.unwrap();
+        assert_eq!(battery.percentage, Some(82));
+        assert_eq!(battery.charging, Some(true));
         assert_eq!(
             (snapshot.dpi.stages[1].x, snapshot.dpi.stages[1].y),
             (800, 1600)
         );
-        assert_eq!(snapshot.polling.wireless_hz, 4000);
-        assert!(snapshot.power.auto_low_power_enabled);
-        assert!(snapshot.wireless_stability.enabled);
-        assert!(!snapshot.bluetooth_smoothing.enabled);
-        assert_eq!(snapshot.scroll_jump.delay_ms, 500);
+        assert_eq!(snapshot.polling.wireless_hz, Some(4000));
+        assert!(snapshot.power.unwrap().auto_low_power_enabled);
+        assert!(snapshot.wireless_stability.unwrap().enabled);
+        assert!(!snapshot.bluetooth_smoothing.unwrap().enabled);
+        assert_eq!(snapshot.scroll_jump.unwrap().delay_ms, 500);
+    }
+
+    #[test]
+    fn opens_wired_dashboard_from_snapshot_with_only_supported_fields() {
+        use crate::dashboard::DashboardView;
+        use serde_json::json;
+
+        let device = json!({
+            "id":"c89245013d972855", "id_source":"custom", "model_key":"aerox_3_wired",
+            "name":"Aerox 3 Wired", "connection":"wired"
+        });
+        let snapshot_data = json!({
+            "device": device,
+            "dpi": {"active_stage":1, "stages":[{"stage":1, "x":1600, "y":1600}]},
+            "polling":{"wired_hz":250}
+        });
+        let snapshot: DeviceSnapshot = parse_success(
+            envelope(DEVICE_SNAPSHOT_COMMAND, &snapshot_data.to_string()).as_bytes(),
+            DEVICE_SNAPSHOT_COMMAND,
+        )
+        .unwrap();
+        assert_eq!(snapshot.polling.wireless_hz, None);
+        assert!(snapshot.battery.is_none());
+        assert!(snapshot.lod.is_none());
+        assert!(snapshot.power.is_none());
+
+        let description_data = json!({
+            "device": device,
+            "capabilities": {
+                "dpi":{"supported":true,"min":200,"max":8500,"step":100,"max_stages":5,"independent_axes":false},
+                "lod":{"supported":false,"per_stage":false,"values":[]},
+                "polling":{"supported":true,"modes":{"wireless":{"rates_hz":[]},"wired":{"rates_hz":[125,250,500,1000]}}},
+                "battery":{"supported":false,"charging_state":false},
+                "power":{"supported":false,"low_power_mode":false,"low_power_polling":{"rates_hz":[]},
+                    "sleep_timer":{"supported":false,"min_minutes":0,"max_minutes":0,"step_minutes":0},
+                    "auto_low_power":{"supported":false,"threshold":{"min":0,"max":0,"step":0,"unit":"percent"}}},
+                "wireless_stability":{"supported":false},
+                "bluetooth_smoothing":{"supported":false},
+                "scroll_jump":{"supported":false,"delay":{"min":0,"max":0,"step":0,"unit":"ms"}}
+            }
+        });
+        let description = parse_success(
+            envelope(DEVICE_DESCRIBE_COMMAND, &description_data.to_string()).as_bytes(),
+            DEVICE_DESCRIBE_COMMAND,
+        )
+        .unwrap();
+        let dashboard = DashboardView::new(description, snapshot);
+        assert_eq!(dashboard.device_id_label, "Custom ID: c89245013d972855");
+        assert_eq!(dashboard.active_dpi, "1600 DPI");
+        assert!(dashboard.show_dpi && !dashboard.dpi_independent_axes);
+        assert_eq!(dashboard.wired_polling, "250 Hz");
+        assert!(
+            dashboard.show_polling
+                && dashboard.show_wired_polling
+                && !dashboard.show_wireless_polling
+        );
+        assert!(!dashboard.show_battery && !dashboard.show_lod && !dashboard.show_power);
+        assert!(
+            !dashboard.show_wireless_stability
+                && !dashboard.show_bluetooth_smoothing
+                && !dashboard.show_scroll_jump
+        );
     }
 
     #[test]
@@ -776,8 +859,9 @@ mod tests {
             DEVICE_SNAPSHOT_COMMAND,
         )
         .unwrap();
-        assert_eq!(snapshot.battery.percentage, None);
-        assert_eq!(snapshot.battery.charging, None);
+        let battery = snapshot.battery.unwrap();
+        assert_eq!(battery.percentage, None);
+        assert_eq!(battery.charging, None);
     }
 
     #[test]

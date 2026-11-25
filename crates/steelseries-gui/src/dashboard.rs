@@ -20,6 +20,7 @@ pub struct DashboardView {
     pub connection: String,
     pub connection_key: String,
     pub device_id: String,
+    pub device_id_label: String,
     pub model_key: String,
     pub show_battery: bool,
     pub battery: String,
@@ -131,8 +132,8 @@ impl DashboardView {
             .collect::<Vec<_>>();
         let lod_rows = snapshot
             .lod
-            .stages
             .iter()
+            .flat_map(|state| &state.stages)
             .map(|stage| {
                 let metadata = lod_metadata(&capabilities.lod.values, &stage.lod);
                 DashboardRow {
@@ -171,22 +172,51 @@ impl DashboardView {
                 }
             },
         );
+        let battery_state = snapshot
+            .battery
+            .as_ref()
+            .filter(|_| capabilities.battery.supported);
+        let battery_percentage = battery_state.and_then(|state| state.percentage);
+        let battery_charging = capabilities.battery.charging_state
+            && battery_state.and_then(|state| state.charging) == Some(true);
         let battery = if capabilities.battery.supported {
-            match snapshot.battery.percentage {
-                Some(percentage) => {
-                    if capabilities.battery.charging_state
-                        && snapshot.battery.charging == Some(true)
-                    {
-                        format!("{percentage}% · Charging")
-                    } else {
-                        format!("{percentage}%")
-                    }
-                }
+            match battery_percentage {
+                Some(percentage) if battery_charging => format!("{percentage}% · Charging"),
+                Some(percentage) => format!("{percentage}%"),
                 None => "Battery unavailable".to_owned(),
             }
         } else {
             String::new()
         };
+        let show_power = capabilities.power.supported && snapshot.power.is_some();
+        let show_wireless_stability =
+            capabilities.wireless_stability.supported && snapshot.wireless_stability.is_some();
+        let show_bluetooth_smoothing =
+            capabilities.bluetooth_smoothing.supported && snapshot.bluetooth_smoothing.is_some();
+        let show_scroll_jump = capabilities.scroll_jump.supported && snapshot.scroll_jump.is_some();
+        let power = snapshot.power.unwrap_or_default();
+        let wireless_stability_enabled = snapshot
+            .wireless_stability
+            .is_some_and(|state| state.enabled);
+        let bluetooth_smoothing_enabled = snapshot
+            .bluetooth_smoothing
+            .is_some_and(|state| state.enabled);
+        let scroll_jump = snapshot.scroll_jump.unwrap_or_default();
+        let wireless_rates = &capabilities.polling.modes.wireless.rates_hz;
+        let wired_rates = &capabilities.polling.modes.wired.rates_hz;
+        let show_wireless_polling =
+            snapshot.polling.wireless_hz.is_some() && !wireless_rates.is_empty();
+        let show_wired_polling = !wired_rates.is_empty();
+        let polling_capabilities = [
+            ("Wireless", wireless_rates, show_wireless_polling),
+            ("Wired", wired_rates, show_wired_polling),
+        ]
+        .into_iter()
+        .filter(|(_, _, show)| *show)
+        .map(|(mode, rates, _)| format!("{mode}: {} Hz", rates_text(rates)))
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let device_id_label = snapshot.device.identity_label();
         let connection_key = snapshot.device.connection.clone();
         let scroll_delay = &capabilities.scroll_jump.delay;
         let sleep_timer = &capabilities.power.sleep_timer;
@@ -198,8 +228,7 @@ impl DashboardView {
             .recommended_range
             .as_ref()
             .map_or(sleep_timer.max_minutes, |range| range.max_minutes);
-        let sleep_timer_value = snapshot
-            .power
+        let sleep_timer_value = power
             .sleep_timer_minutes
             .unwrap_or_else(|| u32::try_from(sleep_recommended_min).unwrap_or(u32::MAX));
         let sleep_timer_edit = u32::try_from(
@@ -212,11 +241,12 @@ impl DashboardView {
             connection: connection_label(&connection_key).to_owned(),
             connection_key: connection_key.clone(),
             device_id: snapshot.device.id,
+            device_id_label,
             model_key: snapshot.device.model_key,
             show_battery: capabilities.battery.supported,
             battery,
-            battery_percentage: snapshot.battery.percentage,
-            battery_charging: snapshot.battery.charging == Some(true),
+            battery_percentage,
+            battery_charging,
             show_dpi: capabilities.dpi.supported,
             active_dpi,
             dpi_capabilities: dpi_capability_text(&capabilities.dpi),
@@ -226,7 +256,7 @@ impl DashboardView {
             dpi_step: capabilities.dpi.step,
             dpi_max_stages: capabilities.dpi.max_stages,
             dpi_rows,
-            show_lod: capabilities.lod.supported,
+            show_lod: capabilities.lod.supported && snapshot.lod.is_some(),
             active_lod,
             lod_capabilities: if capabilities.lod.per_stage {
                 "Configured per DPI stage".to_owned()
@@ -240,46 +270,45 @@ impl DashboardView {
                 .iter()
                 .map(|value| format!("{} — {} mm", value.label, value.distance_mm))
                 .collect(),
-            show_polling: capabilities.polling.supported,
-            show_wireless_polling: !capabilities.polling.modes.wireless.rates_hz.is_empty(),
-            show_wired_polling: !capabilities.polling.modes.wired.rates_hz.is_empty(),
-            wireless_polling: format!("{} Hz", snapshot.polling.wireless_hz),
+            show_polling: capabilities.polling.supported
+                && (show_wired_polling || show_wireless_polling),
+            show_wireless_polling,
+            show_wired_polling,
+            wireless_polling: snapshot
+                .polling
+                .wireless_hz
+                .map_or_else(String::new, |rate| format!("{rate} Hz")),
             wired_polling: format!("{} Hz", snapshot.polling.wired_hz),
-            wireless_polling_hz: snapshot.polling.wireless_hz,
+            wireless_polling_hz: snapshot.polling.wireless_hz.unwrap_or_default(),
             wired_polling_hz: snapshot.polling.wired_hz,
-            wireless_polling_primary: connection_key == "2.4_ghz",
-            wired_polling_primary: connection_key == "wired",
-            polling_capabilities: format!(
-                "Wireless: {} Hz · Wired: {} Hz",
-                rates_text(&capabilities.polling.modes.wireless.rates_hz),
-                rates_text(&capabilities.polling.modes.wired.rates_hz)
-            ),
-            wireless_polling_options: rate_options(&capabilities.polling.modes.wireless.rates_hz),
-            wired_polling_options: rate_options(&capabilities.polling.modes.wired.rates_hz),
-            wireless_polling_index: option_index(
-                &capabilities.polling.modes.wireless.rates_hz,
-                snapshot.polling.wireless_hz,
-            ),
-            wired_polling_index: option_index(
-                &capabilities.polling.modes.wired.rates_hz,
-                snapshot.polling.wired_hz,
-            ),
-            show_power: capabilities.power.supported,
+            wireless_polling_primary: show_wireless_polling
+                && (connection_key == "2.4_ghz" || !show_wired_polling),
+            wired_polling_primary: show_wired_polling
+                && (connection_key == "wired" || !show_wireless_polling),
+            polling_capabilities,
+            wireless_polling_options: rate_options(wireless_rates),
+            wired_polling_options: rate_options(wired_rates),
+            wireless_polling_index: snapshot
+                .polling
+                .wireless_hz
+                .map_or(0, |rate| option_index(wireless_rates, rate)),
+            wired_polling_index: option_index(wired_rates, snapshot.polling.wired_hz),
+            show_power,
             show_low_power_mode: capabilities.power.low_power_mode,
             show_low_power_polling: !capabilities.power.low_power_polling.rates_hz.is_empty(),
             show_sleep_timer: capabilities.power.sleep_timer.supported,
             show_auto_low_power: capabilities.power.auto_low_power.supported,
-            low_power_mode: on_off(snapshot.power.low_power_enabled).to_owned(),
-            low_power_enabled: snapshot.power.low_power_enabled,
-            low_power_polling: format!("{} Hz", snapshot.power.low_power_polling_hz),
-            low_power_polling_hz: snapshot.power.low_power_polling_hz,
+            low_power_mode: on_off(power.low_power_enabled).to_owned(),
+            low_power_enabled: power.low_power_enabled,
+            low_power_polling: format!("{} Hz", power.low_power_polling_hz),
+            low_power_polling_hz: power.low_power_polling_hz,
             low_power_polling_options: rate_options(&capabilities.power.low_power_polling.rates_hz),
             low_power_polling_index: option_index(
                 &capabilities.power.low_power_polling.rates_hz,
-                snapshot.power.low_power_polling_hz,
+                power.low_power_polling_hz,
             ),
-            sleep_timer: snapshot.power.sleep_timer_minutes.map_or_else(
-                || format!("{} ms", snapshot.power.sleep_timer_ms),
+            sleep_timer: power.sleep_timer_minutes.map_or_else(
+                || format!("{} ms", power.sleep_timer_ms),
                 |minutes| format!("{minutes} min"),
             ),
             sleep_timer_edit,
@@ -289,29 +318,26 @@ impl DashboardView {
             sleep_timer_step: sleep_timer.step_minutes,
             sleep_timer_real_min: sleep_timer.min_minutes,
             sleep_timer_real_max: sleep_timer.max_minutes,
-            auto_low_power: on_off(snapshot.power.auto_low_power_enabled).to_owned(),
-            auto_low_power_enabled: snapshot.power.auto_low_power_enabled,
-            auto_low_power_threshold: format!(
-                "{}%",
-                snapshot.power.auto_low_power_threshold_percent
-            ),
-            auto_low_power_threshold_edit: snapshot.power.auto_low_power_threshold_percent,
-            auto_low_power_threshold_current: snapshot.power.auto_low_power_threshold_percent,
+            auto_low_power: on_off(power.auto_low_power_enabled).to_owned(),
+            auto_low_power_enabled: power.auto_low_power_enabled,
+            auto_low_power_threshold: format!("{}%", power.auto_low_power_threshold_percent),
+            auto_low_power_threshold_edit: power.auto_low_power_threshold_percent,
+            auto_low_power_threshold_current: power.auto_low_power_threshold_percent,
             auto_low_power_threshold_min: capabilities.power.auto_low_power.threshold.min,
             auto_low_power_threshold_max: capabilities.power.auto_low_power.threshold.max,
             auto_low_power_threshold_step: capabilities.power.auto_low_power.threshold.step,
-            show_wireless_stability: capabilities.wireless_stability.supported,
-            wireless_stability: on_off(snapshot.wireless_stability.enabled).to_owned(),
-            wireless_stability_enabled: snapshot.wireless_stability.enabled,
-            show_bluetooth_smoothing: capabilities.bluetooth_smoothing.supported,
-            bluetooth_smoothing: on_off(snapshot.bluetooth_smoothing.enabled).to_owned(),
-            bluetooth_smoothing_enabled: snapshot.bluetooth_smoothing.enabled,
-            show_scroll_jump: capabilities.scroll_jump.supported,
-            scroll_jump: on_off(snapshot.scroll_jump.enabled).to_owned(),
-            scroll_jump_enabled: snapshot.scroll_jump.enabled,
-            scroll_jump_delay: format!("{} ms", snapshot.scroll_jump.delay_ms),
-            scroll_jump_delay_edit: snapshot.scroll_jump.delay_ms,
-            scroll_jump_delay_current: snapshot.scroll_jump.delay_ms,
+            show_wireless_stability,
+            wireless_stability: on_off(wireless_stability_enabled).to_owned(),
+            wireless_stability_enabled,
+            show_bluetooth_smoothing,
+            bluetooth_smoothing: on_off(bluetooth_smoothing_enabled).to_owned(),
+            bluetooth_smoothing_enabled,
+            show_scroll_jump,
+            scroll_jump: on_off(scroll_jump.enabled).to_owned(),
+            scroll_jump_enabled: scroll_jump.enabled,
+            scroll_jump_delay: format!("{} ms", scroll_jump.delay_ms),
+            scroll_jump_delay_edit: scroll_jump.delay_ms,
+            scroll_jump_delay_current: scroll_jump.delay_ms,
             scroll_jump_capabilities: format!(
                 "{}–{} {}, step {} {}",
                 scroll_delay.min,
@@ -402,8 +428,10 @@ mod tests {
         independent: bool,
     ) -> DashboardView {
         let device = Device {
+            battery_supported: Some(battery_supported),
             connection: "wired".to_owned(),
             id: "AAA".to_owned(),
+            id_source: String::new(),
             model_key: "test_model".to_owned(),
             name: "Test Mouse".to_owned(),
         };
@@ -490,10 +518,10 @@ mod tests {
         };
         let snapshot = DeviceSnapshot {
             device,
-            battery: BatteryState {
+            battery: Some(BatteryState {
                 percentage,
                 charging: percentage.map(|_| true),
-            },
+            }),
             dpi: DpiState {
                 active_stage: 2,
                 stages: vec![
@@ -509,7 +537,7 @@ mod tests {
                     },
                 ],
             },
-            lod: LodState {
+            lod: Some(LodState {
                 stages: vec![
                     LodStageState {
                         stage: 1,
@@ -520,25 +548,25 @@ mod tests {
                         lod: "high".to_owned(),
                     },
                 ],
-            },
+            }),
             polling: PollingState {
-                wireless_hz: 4000,
+                wireless_hz: Some(4000),
                 wired_hz: 1000,
             },
-            power: PowerState {
+            power: Some(PowerState {
                 low_power_enabled: false,
                 low_power_polling_hz: 500,
                 sleep_timer_minutes: Some(30),
                 sleep_timer_ms: 1_800_000,
                 auto_low_power_enabled: true,
                 auto_low_power_threshold_percent: 15,
-            },
-            wireless_stability: EnabledState { enabled: true },
-            bluetooth_smoothing: EnabledState { enabled: false },
-            scroll_jump: ScrollJumpState {
+            }),
+            wireless_stability: Some(EnabledState { enabled: true }),
+            bluetooth_smoothing: Some(EnabledState { enabled: false }),
+            scroll_jump: Some(ScrollJumpState {
                 enabled: true,
                 delay_ms: 500,
-            },
+            }),
         };
         DashboardView::new(description, snapshot)
     }

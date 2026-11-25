@@ -7,6 +7,7 @@ CARGO ?= cargo
 
 override_dh_auto_build:
 	$(CARGO) build --release --locked --workspace
+	STEELSERIESCTL_GENERATE_COMPLETIONS=target/completions target/release/steelseriesctl
 
 override_dh_auto_test:
 	$(CARGO) test --workspace --locked

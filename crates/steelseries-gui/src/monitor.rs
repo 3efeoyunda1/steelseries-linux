@@ -51,10 +51,12 @@ impl MonitorState {
             {
                 known.name.clone_from(&device.name);
                 known.model_key.clone_from(&device.model_key);
+                known.battery_supported = device.battery_supported.or(known.battery_supported);
                 known.last_connection.clone_from(&device.connection);
                 known.last_seen_unix_seconds = Some(now);
             } else {
                 settings.known_devices.push(KnownDevice {
+                    battery_supported: device.battery_supported,
                     id: device.id.clone(),
                     name: device.name.clone(),
                     model_key: device.model_key.clone(),
@@ -161,7 +163,9 @@ mod tests {
 
     fn device(id: &str) -> Device {
         Device {
+            battery_supported: Some(true),
             id: id.to_owned(),
+            id_source: String::new(),
             name: id.to_owned(),
             model_key: "model".to_owned(),
             connection: "wired".to_owned(),
@@ -174,6 +178,7 @@ mod tests {
             known_devices: ["A", "B", "C"]
                 .into_iter()
                 .map(|id| KnownDevice {
+                    battery_supported: Some(true),
                     id: id.to_owned(),
                     name: id.to_owned(),
                     model_key: "model".to_owned(),
@@ -198,6 +203,25 @@ mod tests {
         assert_eq!(state.tray_target.as_deref(), Some("B"));
         state.reconcile_devices(&mut settings, vec![]);
         assert_eq!(state.tray_target, None);
+    }
+
+    #[test]
+    fn battery_priority_excludes_wired_mice_but_keeps_them_in_discovery() {
+        let mut settings = settings();
+        let mut state = MonitorState::default();
+        let wired = Device {
+            battery_supported: Some(false),
+            ..device("A")
+        };
+        state.reconcile_devices(&mut settings, vec![wired.clone(), device("B")]);
+        assert_eq!(state.active_devices.len(), 2);
+        assert_eq!(settings.device_priority, ["B", "C"]);
+        assert_eq!(state.tray_target.as_deref(), Some("B"));
+
+        state.reconcile_devices(&mut settings, vec![wired]);
+        assert_eq!(settings.device_priority, ["B", "C"]);
+        assert_eq!(state.tray_target, None);
+        assert_eq!(state.active_devices[0].id, "A");
     }
 
     #[test]
@@ -258,6 +282,7 @@ mod tests {
         assert!(!schedule.finish());
         schedule.set_interval(15);
         assert_eq!(schedule.interval_seconds(), 15);
-        assert_ne!(schedule.interval_seconds(), 5);
+        schedule.set_interval(5);
+        assert_eq!(schedule.interval_seconds(), 5);
     }
 }

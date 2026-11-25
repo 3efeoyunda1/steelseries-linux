@@ -3,15 +3,7 @@ set -eu
 
 repo_root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
 package_dir="${repo_root}/arch"
-version=$(awk '
-    /^\[workspace.package\]$/ { in_workspace_package = 1; next }
-    /^\[/ { in_workspace_package = 0 }
-    in_workspace_package && /^version = / {
-        gsub(/["[:space:]]/, "", $3)
-        print $3
-        exit
-    }
-' "${repo_root}/Cargo.toml")
+. "${repo_root}/scripts/package-version.sh"
 build_root=$(mktemp -d)
 trap 'rm -rf -- "$build_root"' EXIT HUP INT TERM
 source_archive="${build_root}/steelseries-linux-${version}.tar.gz"
@@ -20,6 +12,10 @@ cp \
     "${package_dir}/PKGBUILD" \
     "${package_dir}/steelseries-linux.install" \
     "$build_root/"
+
+# makepkg reads pkgver before extracting the source archive.
+sed "s/^pkgver=.*/pkgver=${version}/" "${build_root}/PKGBUILD" > "${build_root}/PKGBUILD.versioned"
+mv "${build_root}/PKGBUILD.versioned" "${build_root}/PKGBUILD"
 
 tar -czf "$source_archive" \
     --transform "s,^,steelseries-linux-${version}/," \
@@ -34,6 +30,11 @@ tar -czf "$source_archive" \
 output_dir="${repo_root}/dist/arch"
 mkdir -p "$output_dir"
 for package in "${build_root}"/steelseries-linux*-"${version}"-*.pkg.tar.zst; do
-    [ -f "$package" ] || continue
+    [ -f "$package" ] || { echo "No Arch packages produced for $version" >&2; exit 1; }
+    name=$(pacman -Qqp "$package")
+    files=$(pacman -Qlp "$package")
+    "${repo_root}/scripts/verify-package-completions.sh" "$name" <<EOF
+$files
+EOF
     cp -f "$package" "$output_dir/"
 done

@@ -3,3 +3,7 @@ KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct
 
 # SteelSeries Aerox 3 Wireless Gen 2 — wired USB configuration interface
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1892", TAG+="uaccess"
+
+# SteelSeries Aerox 3 Wired — USB configuration interface
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="1836", ENV{.STEELSERIES_AEROX_3_WIRED}="1"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ENV{.STEELSERIES_AEROX_3_WIRED}=="1", ATTRS{bInterfaceNumber}=="03", TAG+="uaccess"

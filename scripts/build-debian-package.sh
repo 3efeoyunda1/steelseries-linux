@@ -2,15 +2,7 @@
 set -eu
 
 repo_root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
-version=$(awk '
-    /^\[workspace.package\]$/ { in_workspace_package = 1; next }
-    /^\[/ { in_workspace_package = 0 }
-    in_workspace_package && /^version = / {
-        gsub(/["[:space:]]/, "", $3)
-        print $3
-        exit
-    }
-' "${repo_root}/Cargo.toml")
+. "${repo_root}/scripts/package-version.sh"
 build_root=$(mktemp -d)
 source_dir="${build_root}/steelseries-linux-${version}"
 trap 'rm -rf -- "$build_root"' EXIT HUP INT TERM
@@ -26,6 +18,19 @@ cp -a \
     "${repo_root}/README.md" \
     "${repo_root}/debian" \
     "$source_dir/"
+
+# dpkg takes package metadata from the first changelog entry.
+changelog="${source_dir}/debian/changelog"
+current_version=$(dpkg-parsechangelog -l"$changelog" -S Version)
+if [ "$current_version" != "${version}-1" ]; then
+    {
+        printf 'steelseries-linux (%s-1) unstable; urgency=medium\n\n' "$version"
+        printf '  * Build from Cargo workspace version %s.\n\n' "$version"
+        printf ' -- SteelSeries Linux <3efeoyunda1@users.noreply.github.com>  %s\n\n' "$(LC_ALL=C date -R)"
+        cat "$changelog"
+    } > "${changelog}.versioned"
+    mv "${changelog}.versioned" "$changelog"
+fi
 
 tar -czf "${build_root}/steelseries-linux_${version}.orig.tar.gz" \
     --transform "s,^,steelseries-linux-${version}/," \
@@ -72,6 +77,11 @@ for package in \
     "${build_root}"/steelseries-linux_"${version}"-1_*.deb \
     "${build_root}"/steelseries-linux-gui_"${version}"-1_*.deb
 do
-    [ -f "$package" ] || continue
+    [ -f "$package" ] || { echo "Missing Debian package for $version" >&2; exit 1; }
+    name=$(dpkg-deb -f "$package" Package)
+    files=$(dpkg-deb -c "$package")
+    "${repo_root}/scripts/verify-package-completions.sh" "$name" <<EOF
+$files
+EOF
     cp -f "$package" "$output_dir/"
 done

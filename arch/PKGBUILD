@@ -21,6 +21,8 @@ build() {
   RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }--remap-path-prefix=${srcdir}=/usr/src/steelseries-linux" \
     CARGO_TARGET_DIR="${srcdir}/target" cargo build --release --locked \
     -p steelseries-cli -p steelseries-gui
+  STEELSERIESCTL_GENERATE_COMPLETIONS="${srcdir}/target/completions" \
+    "${srcdir}/target/release/steelseriesctl"
 }
 
 check() {
@@ -37,6 +39,12 @@ package_steelseries-linux() {
 
   install -Dm755 "${srcdir}/target/release/steelseriesctl" \
     "${pkgdir}/usr/bin/steelseriesctl"
+  install -Dm644 "${srcdir}/target/completions/steelseriesctl" \
+    "${pkgdir}/usr/share/bash-completion/completions/steelseriesctl"
+  install -Dm644 "${srcdir}/target/completions/_steelseriesctl" \
+    "${pkgdir}/usr/share/zsh/site-functions/_steelseriesctl"
+  install -Dm644 "${srcdir}/target/completions/steelseriesctl.fish" \
+    "${pkgdir}/usr/share/fish/vendor_completions.d/steelseriesctl.fish"
   install -Dm644 udev/70-steelseries-linux.rules \
     "${pkgdir}/usr/lib/udev/rules.d/70-steelseries-linux.rules"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
@@ -56,4 +64,5 @@ package_steelseries-linux-gui() {
   install -Dm644 assets/app/steelseries-linux-gui.svg \
     "${pkgdir}/usr/share/icons/hicolor/scalable/apps/steelseries-linux-gui.svg"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 crates/vendor/softbuffer/LICENSE-MIT "${pkgdir}/usr/share/licenses/${pkgname}/softbuffer-MIT"
 }

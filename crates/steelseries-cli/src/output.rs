@@ -1,9 +1,12 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 use steelseries_core::{
-    Aerox3WirelessGen2, BatteryStatus, ConnectionType, DeviceCapabilities, DpiConfig, Error,
-    LiftOffDistance, PhysicalDevice, PollingConfig, PowerConfig, ScrollJumpConfig,
-    WirelessFeatures,
+    BatteryStatus, ConnectionType, DeviceCapabilities, DpiConfig, Error, LiftOffDistance,
+    PhysicalDevice, PollingState, PowerConfig, ScrollJumpConfig, WirelessFeatures,
+    validation::{
+        AUTO_LOW_POWER_THRESHOLD, LOW_POWER_POLLING_RATES, MAX_DPI_STAGES, MIN_DPI_STAGES,
+        POLLING_RATES, SCROLL_JUMP_DELAY, SLEEP_TIMER, WIRED_POLLING_RATES,
+    },
 };
 
 pub const SCHEMA_VERSION: u8 = 1;
@@ -115,6 +118,9 @@ fn error_code(error: &Error) -> &'static str {
         | Error::InvalidDpiActiveIndex { .. }
         | Error::InvalidStageId(_)
         | Error::StageNotConfigured { .. }
+        | Error::InvalidPollingArguments
+        | Error::PollingModeRequired { .. }
+        | Error::InvalidPollingRate { .. }
         | Error::UnsupportedPollingRate(_)
         | Error::WiredPollingTooHigh { .. }
         | Error::UnsupportedLowPowerPollingRate(_)
@@ -125,16 +131,24 @@ fn error_code(error: &Error) -> &'static str {
         Error::DeviceNotConnected
         | Error::InterfaceNotFound
         | Error::RequestedDeviceNotFound { .. }
+        | Error::DeviceChanged(_)
         | Error::ReceiverLinkUnavailable => "device_not_found",
-        Error::ReadTimeout { .. } => "timeout",
-        Error::HidInitialization(_)
+        Error::ReadTimeout { .. } | Error::LockTimeout => "timeout",
+        Error::IncompleteHidExchange
+        | Error::UsbTopology { .. }
+        | Error::Lock(_)
+        | Error::HidInitialization(_)
         | Error::Open(_)
         | Error::OpenPermissionDenied { .. }
         | Error::Write { .. }
         | Error::ShortWrite { .. }
         | Error::Read { .. } => "device_io",
         Error::MalformedResponse { .. }
+        | Error::InvalidReportLength { .. }
         | Error::UnexpectedCommand { .. }
+        | Error::InvalidAcknowledgement { .. }
+        | Error::MalformedDpiState { .. }
+        | Error::UnknownDpiCode(_)
         | Error::UnknownLiftOffDistance(_)
         | Error::UnknownPollingCode(_)
         | Error::UnknownLowPowerPollingCode(_)
@@ -149,21 +163,29 @@ fn error_code(error: &Error) -> &'static str {
         | Error::InvalidDeviceIdentity
         | Error::InvalidReceiverLinkState(_) => "protocol_error",
         Error::MultipleDevices { .. } => "command_failed",
+        Error::AmbiguousDeviceId(_) => "ambiguous_device_id",
+        Error::UnsupportedFeature { .. } => "unsupported_feature",
     }
 }
 
 fn error_metadata(error: &Error) -> (Option<String>, Option<Value>) {
-    let capabilities = Aerox3WirelessGen2::capabilities();
     match error {
         Error::InvalidDpiStageCount(value) => (
             Some("stages".to_owned()),
             Some(json!({
                 "value": value,
-                "min_items": 1,
-                "max_items": capabilities.dpi.max_stages,
+                "min_items": MIN_DPI_STAGES,
+                "max_items": MAX_DPI_STAGES,
             })),
         ),
-        Error::InvalidDpiValue { axis, value, stage } => {
+        Error::InvalidDpiValue {
+            axis,
+            value,
+            stage,
+            min,
+            max,
+            step,
+        } => {
             let axis_name = axis.to_ascii_lowercase();
             let field = stage.map_or_else(
                 || format!("dpi.{axis_name}"),
@@ -175,57 +197,72 @@ fn error_metadata(error: &Error) -> (Option<String>, Option<Value>) {
                     "axis": axis_name,
                     "stage": stage,
                     "value": value,
-                    "min": capabilities.dpi.min,
-                    "max": capabilities.dpi.max,
-                    "step": capabilities.dpi.step,
+                    "min": min,
+                    "max": max,
+                    "step": step,
                 })),
             )
         }
+        Error::PollingModeRequired { .. } => (
+            Some("mode".to_owned()),
+            Some(json!({"allowed": ["wired", "wireless"]})),
+        ),
+        Error::InvalidPollingRate {
+            connection,
+            hz,
+            allowed,
+        } => (
+            Some(format!("{connection}_hz")),
+            Some(json!({
+                "value": hz,
+                "allowed": allowed.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
+            })),
+        ),
         Error::UnsupportedPollingRate(value) => (
             Some("wireless_hz".to_owned()),
             Some(json!({
                 "value": value,
-                "allowed": capabilities.polling.wireless.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
+                "allowed": POLLING_RATES.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
             })),
         ),
         Error::WiredPollingTooHigh { value } => (
             Some("wired_hz".to_owned()),
             Some(json!({
                 "value": value,
-                "allowed": capabilities.polling.wired.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
+                "allowed": WIRED_POLLING_RATES.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
             })),
         ),
         Error::UnsupportedLowPowerPollingRate(value) => (
             Some("low_power_polling_hz".to_owned()),
             Some(json!({
                 "value": value,
-                "allowed": capabilities.power.low_power_polling.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
+                "allowed": LOW_POWER_POLLING_RATES.iter().map(|rate| rate.hz()).collect::<Vec<_>>(),
             })),
         ),
         Error::InvalidAutoLowPowerThreshold(value) => (
             Some("auto_low_power_threshold_percent".to_owned()),
             Some(json!({
                 "value": value,
-                "min": capabilities.power.auto_low_power_threshold.min,
-                "max": capabilities.power.auto_low_power_threshold.max,
-                "step": capabilities.power.auto_low_power_threshold.step,
+                "min": AUTO_LOW_POWER_THRESHOLD.min,
+                "max": AUTO_LOW_POWER_THRESHOLD.max,
+                "step": AUTO_LOW_POWER_THRESHOLD.step,
             })),
         ),
         Error::SleepTimerZero | Error::SleepTimerTooLarge => (
             Some("sleep_timer_minutes".to_owned()),
             Some(json!({
-                "min": capabilities.power.sleep_timer.min,
-                "max": capabilities.power.sleep_timer.max,
-                "step": capabilities.power.sleep_timer.step,
+                "min": SLEEP_TIMER.min,
+                "max": SLEEP_TIMER.max,
+                "step": SLEEP_TIMER.step,
             })),
         ),
         Error::InvalidScrollJumpDelay(value) => (
             Some("delay_ms".to_owned()),
             Some(json!({
                 "value": value,
-                "min": capabilities.scroll_jump.delay.min,
-                "max": capabilities.scroll_jump.delay.max,
-                "step": capabilities.scroll_jump.delay.step,
+                "min": SCROLL_JUMP_DELAY.min,
+                "max": SCROLL_JUMP_DELAY.max,
+                "step": SCROLL_JUMP_DELAY.step,
             })),
         ),
         _ => (None, None),
@@ -244,10 +281,14 @@ pub struct DevicesData {
 
 #[derive(Debug, Serialize)]
 pub struct DeviceData {
+    pub battery_supported: bool,
     pub id: String,
+    pub id_source: &'static str,
     pub name: &'static str,
     pub model_key: &'static str,
     pub connection: &'static str,
+    pub wired_endpoint_available: bool,
+    pub receiver_endpoint_available: bool,
 }
 
 impl DevicesData {
@@ -261,10 +302,12 @@ impl DevicesData {
 impl DeviceData {
     pub fn from_device(device: &PhysicalDevice) -> Self {
         Self {
+            battery_supported: device.model.capabilities().battery.supported,
             id: device.identity.to_string(),
-            name: match device.model {
-                steelseries_core::DeviceModel::Aerox3WirelessGen2 => "Aerox 3 Wireless Gen 2",
-            },
+            id_source: device.identity.source().key(),
+            name: device.model.name(),
+            wired_endpoint_available: device.wired_endpoint_available,
+            receiver_endpoint_available: device.receiver_endpoint_available,
             model_key: device.model.key(),
             connection: match device.active_connection {
                 ConnectionType::Wired => "wired",
@@ -299,6 +342,7 @@ pub struct CapabilitiesData {
     pub wireless_stability: SupportedData,
     pub bluetooth_smoothing: SupportedData,
     pub scroll_jump: ScrollJumpCapabilitiesData,
+    pub commit: bool,
 }
 
 impl From<&DeviceCapabilities> for CapabilitiesData {
@@ -309,7 +353,9 @@ impl From<&DeviceCapabilities> for CapabilitiesData {
                 min: capabilities.dpi.min,
                 max: capabilities.dpi.max,
                 step: capabilities.dpi.step,
+                min_stages: capabilities.dpi.min_stages,
                 max_stages: capabilities.dpi.max_stages,
+                active_stage_selection: capabilities.dpi.active_stage_selection,
                 independent_axes: capabilities.dpi.independent_axes,
             },
             lod: LodCapabilitiesData {
@@ -363,7 +409,7 @@ impl From<&DeviceCapabilities> for CapabilitiesData {
                         .collect(),
                 },
                 sleep_timer: SleepTimerCapabilitiesData {
-                    supported: true,
+                    supported: capabilities.power.sleep_timer.supported,
                     min: capabilities.power.sleep_timer.min,
                     max: capabilities.power.sleep_timer.max,
                     step: capabilities.power.sleep_timer.step,
@@ -390,6 +436,7 @@ impl From<&DeviceCapabilities> for CapabilitiesData {
             bluetooth_smoothing: SupportedData {
                 supported: capabilities.wireless_features.bluetooth_smoothing.supported,
             },
+            commit: capabilities.commit,
             scroll_jump: ScrollJumpCapabilitiesData {
                 supported: capabilities.scroll_jump.supported,
                 delay: UnitRangeData {
@@ -409,7 +456,9 @@ pub struct DpiCapabilitiesData {
     pub min: u16,
     pub max: u16,
     pub step: u16,
+    pub min_stages: usize,
     pub max_stages: usize,
+    pub active_stage_selection: bool,
     pub independent_axes: bool,
 }
 
@@ -515,46 +564,54 @@ pub struct UnitRangeData<T> {
 #[derive(Debug, Serialize)]
 pub struct DeviceSnapshotData {
     pub device: DeviceData,
-    pub battery: BatteryData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery: Option<BatteryData>,
     pub dpi: DpiData,
-    pub lod: LodData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lod: Option<LodData>,
     pub polling: PollingData,
-    pub power: PowerData,
-    pub wireless_stability: EnabledData,
-    pub bluetooth_smoothing: EnabledData,
-    pub scroll_jump: ScrollJumpData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power: Option<PowerData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wireless_stability: Option<EnabledData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bluetooth_smoothing: Option<EnabledData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_jump: Option<ScrollJumpData>,
 }
 
 impl DeviceSnapshotData {
     pub fn new(
         device: &PhysicalDevice,
-        battery: BatteryStatus,
+        battery: Option<BatteryStatus>,
         dpi: &DpiConfig,
-        polling: PollingConfig,
-        power: &PowerConfig,
-        wireless_features: &WirelessFeatures,
-        scroll_jump: &ScrollJumpConfig,
+        polling: PollingState,
+        power: Option<&PowerConfig>,
+        wireless_features: Option<&WirelessFeatures>,
+        scroll_jump: Option<&ScrollJumpConfig>,
     ) -> Self {
+        let caps = device.model.capabilities();
         Self {
             device: DeviceData::from_device(device),
-            battery: BatteryData::from(battery),
+            battery: battery.map(BatteryData::from),
             dpi: DpiData::from_config(dpi),
-            lod: LodData::from_config(dpi),
-            polling: PollingData {
-                wireless_hz: polling.wireless.hz(),
-                wired_hz: polling.wired.hz(),
-            },
-            power: PowerData::from(power),
-            wireless_stability: EnabledData {
-                enabled: wireless_features.wireless_stability_enabled,
-            },
-            bluetooth_smoothing: EnabledData {
-                enabled: wireless_features.bluetooth_smoothing_enabled,
-            },
-            scroll_jump: ScrollJumpData {
-                enabled: scroll_jump.enabled,
-                delay_ms: scroll_jump.delay_ms,
-            },
+            lod: caps.lod.supported.then(|| LodData::from_config(dpi)),
+            polling: polling.into(),
+            power: power.map(PowerData::from),
+            wireless_stability: wireless_features
+                .filter(|_| caps.wireless_features.wireless_stability.supported)
+                .map(|state| EnabledData {
+                    enabled: state.wireless_stability_enabled,
+                }),
+            bluetooth_smoothing: wireless_features
+                .filter(|_| caps.wireless_features.bluetooth_smoothing.supported)
+                .map(|state| EnabledData {
+                    enabled: state.bluetooth_smoothing_enabled,
+                }),
+            scroll_jump: scroll_jump.map(|state| ScrollJumpData {
+                enabled: state.enabled,
+                delay_ms: state.delay_ms,
+            }),
         }
     }
 }
@@ -637,8 +694,18 @@ pub struct LodSetData {
 
 #[derive(Debug, Serialize)]
 pub struct PollingData {
-    pub wireless_hz: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wireless_hz: Option<u16>,
     pub wired_hz: u16,
+}
+
+impl From<PollingState> for PollingData {
+    fn from(polling: PollingState) -> Self {
+        Self {
+            wireless_hz: polling.wireless.map(|rate| rate.hz()),
+            wired_hz: polling.wired.hz(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -869,7 +936,7 @@ mod tests {
             "polling.get",
             "human",
             PollingData {
-                wireless_hz: 4_000,
+                wireless_hz: Some(4_000),
                 wired_hz: 1_000,
             },
         ));
@@ -928,7 +995,11 @@ mod tests {
             "human",
             DevicesData {
                 devices: vec![DeviceData {
+                    battery_supported: true,
                     id: "6271700431492500250".to_owned(),
+                    id_source: "hardware",
+                    wired_endpoint_available: true,
+                    receiver_endpoint_available: false,
                     name: "Aerox 3 Wireless Gen 2",
                     model_key: "aerox_3_wireless_gen2",
                     connection: "wired",
@@ -937,6 +1008,7 @@ mod tests {
         ));
         assert_eq!(value["command"], "device.list");
         assert_eq!(value["data"]["devices"][0]["id"], "6271700431492500250");
+        assert_eq!(value["data"]["devices"][0]["id_source"], "hardware");
         assert!(value.to_string().find("hidraw").is_none());
     }
 
@@ -998,7 +1070,9 @@ mod tests {
 
     #[test]
     fn capability_json_uses_device_constraints_semantically() {
-        let capabilities = CapabilitiesData::from(Aerox3WirelessGen2::capabilities());
+        let capabilities = CapabilitiesData::from(
+            steelseries_core::DeviceModel::Aerox3WirelessGen2.capabilities(),
+        );
         let value = serde_json::to_value(capabilities).unwrap();
         assert_eq!(
             value["dpi"],
@@ -1007,7 +1081,9 @@ mod tests {
                 "min": 50,
                 "max": 26000,
                 "step": 50,
+                "min_stages": 1,
                 "max_stages": 5,
+                "active_stage_selection": true,
                 "independent_axes": true
             })
         );
@@ -1032,12 +1108,18 @@ mod tests {
             "human",
             DeviceDescribeData {
                 device: DeviceData {
+                    battery_supported: true,
                     id: "6271700431492500250".to_owned(),
+                    id_source: "hardware",
+                    wired_endpoint_available: true,
+                    receiver_endpoint_available: false,
                     name: "Aerox 3 Wireless Gen 2",
                     model_key: "aerox_3_wireless_gen2",
                     connection: "2.4_ghz",
                 },
-                capabilities: CapabilitiesData::from(Aerox3WirelessGen2::capabilities()),
+                capabilities: CapabilitiesData::from(
+                    steelseries_core::DeviceModel::Aerox3WirelessGen2.capabilities(),
+                ),
             },
         );
         let value = parsed(&output);
@@ -1056,15 +1138,19 @@ mod tests {
             "human",
             DeviceSnapshotData {
                 device: DeviceData {
+                    battery_supported: true,
                     id: "AAA".to_owned(),
+                    id_source: "hardware",
+                    wired_endpoint_available: true,
+                    receiver_endpoint_available: false,
                     name: "Aerox 3 Wireless Gen 2",
                     model_key: "aerox_3_wireless_gen2",
                     connection: "wired",
                 },
-                battery: BatteryData {
+                battery: Some(BatteryData {
                     percentage: Some(87),
                     charging: Some(false),
-                },
+                }),
                 dpi: DpiData {
                     active_stage: 1,
                     stages: vec![DpiStageData {
@@ -1073,30 +1159,30 @@ mod tests {
                         y: 1_600,
                     }],
                 },
-                lod: LodData {
+                lod: Some(LodData {
                     stages: vec![LodStageData {
                         stage: 1,
                         lod: "high",
                     }],
-                },
+                }),
                 polling: PollingData {
-                    wireless_hz: 4_000,
+                    wireless_hz: Some(4_000),
                     wired_hz: 1_000,
                 },
-                power: PowerData {
+                power: Some(PowerData {
                     low_power_enabled: false,
                     low_power_polling_hz: 500,
                     sleep_timer_minutes: Some(5),
                     sleep_timer_ms: 300_000,
                     auto_low_power_enabled: true,
                     auto_low_power_threshold_percent: 10,
-                },
-                wireless_stability: EnabledData { enabled: true },
-                bluetooth_smoothing: EnabledData { enabled: false },
-                scroll_jump: ScrollJumpData {
+                }),
+                wireless_stability: Some(EnabledData { enabled: true }),
+                bluetooth_smoothing: Some(EnabledData { enabled: false }),
+                scroll_jump: Some(ScrollJumpData {
                     enabled: true,
                     delay_ms: 500,
-                },
+                }),
             },
         );
         let value = parsed(&output);
@@ -1109,10 +1195,125 @@ mod tests {
 
     #[test]
     fn unsupported_capability_is_represented_explicitly() {
-        let mut capabilities = *Aerox3WirelessGen2::capabilities();
+        let mut capabilities = *steelseries_core::DeviceModel::Aerox3WirelessGen2.capabilities();
         capabilities.scroll_jump.supported = false;
         let value = serde_json::to_value(CapabilitiesData::from(&capabilities)).unwrap();
         assert_eq!(value["scroll_jump"]["supported"], false);
+    }
+
+    #[test]
+    fn wired_json_exposes_identity_and_only_supported_state() {
+        use steelseries_core::{DeviceIdentity, DeviceModel, IdentitySource, PollingRate};
+
+        let device = PhysicalDevice {
+            model: DeviceModel::Aerox3Wired,
+            identity: DeviceIdentity::with_source("c89245013d972855", IdentitySource::Custom),
+            active_connection: ConnectionType::Wired,
+            wired_endpoint_available: true,
+            receiver_endpoint_available: false,
+        };
+        let caps = device.model.capabilities();
+        let describe = parsed(&CommandOutput::new(
+            "device.describe",
+            "",
+            DeviceDescribeData::new(&device, caps),
+        ));
+        let data = &describe["data"];
+        assert_eq!(
+            data["device"],
+            json!({
+                "id": "c89245013d972855",
+                "id_source": "custom",
+                "battery_supported": false,
+                "name": "Aerox 3 Wired",
+                "model_key": "aerox_3_wired",
+                "connection": "wired",
+                "wired_endpoint_available": true,
+                "receiver_endpoint_available": false,
+            })
+        );
+        let caps = &data["capabilities"];
+        assert_eq!(
+            caps["dpi"],
+            json!({
+                "supported": true, "min": 200, "max": 8500, "step": 100,
+                "min_stages": 1, "max_stages": 5, "active_stage_selection": true, "independent_axes": false,
+            })
+        );
+        assert_eq!(caps["commit"], true);
+        assert_eq!(caps["power"]["sleep_timer"]["supported"], false);
+        assert_eq!(caps["battery"]["charging_state"], false);
+        assert_eq!(caps["polling"]["modes"]["wireless"]["rates_hz"], json!([]));
+        for feature in [
+            "lod",
+            "battery",
+            "power",
+            "wireless_stability",
+            "bluetooth_smoothing",
+            "scroll_jump",
+        ] {
+            assert_eq!(caps[feature]["supported"], false);
+        }
+
+        let dpi = DpiConfig {
+            stages: vec![DpiStage::scalar(800), DpiStage::scalar(1600)],
+            active: 1,
+        };
+        let snapshot = parsed(&CommandOutput::new(
+            "device.snapshot",
+            "",
+            DeviceSnapshotData::new(
+                &device,
+                None,
+                &dpi,
+                PollingState {
+                    wired: PollingRate::Hz250,
+                    wireless: None,
+                },
+                None,
+                None,
+                None,
+            ),
+        ));
+        assert_eq!(snapshot["schema_version"], 1);
+        assert_eq!(snapshot["data"]["device"], data["device"]);
+        assert_eq!(snapshot["data"]["polling"], json!({ "wired_hz": 250 }));
+        assert_eq!(snapshot["data"]["dpi"]["active_stage"], 2);
+        assert_eq!(
+            snapshot["data"]["dpi"]["stages"][0],
+            json!({ "stage": 1, "x": 800, "y": 800 })
+        );
+        for field in [
+            "lod",
+            "battery",
+            "power",
+            "wireless_stability",
+            "bluetooth_smoothing",
+            "scroll_jump",
+        ] {
+            assert!(snapshot["data"].get(field).is_none());
+        }
+    }
+
+    #[test]
+    fn selection_and_unsupported_feature_errors_have_distinct_codes() {
+        use steelseries_core::{DeviceFeature, DeviceModel};
+
+        let error = DeviceFeature::Battery
+            .require(DeviceModel::Aerox3Wired)
+            .unwrap_err();
+        let document: Value = serde_json::from_str(&error_document("battery.get", &error)).unwrap();
+        assert_eq!(document["error"]["code"], "unsupported_feature");
+        assert!(
+            document["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Aerox 3 Wired")
+        );
+
+        let error = Error::AmbiguousDeviceId("c89245013d972855".to_owned());
+        let document: Value = serde_json::from_str(&error_document("dpi.get", &error)).unwrap();
+        assert_eq!(document["error"]["code"], "ambiguous_device_id");
     }
 
     #[test]
@@ -1121,6 +1322,9 @@ mod tests {
             axis: "X",
             value: 27_000,
             stage: Some(1),
+            min: 50,
+            max: 26_000,
+            step: 50,
         };
         let value: Value = serde_json::from_str(&error_document("dpi.set", &dpi)).unwrap();
         assert_eq!(value["error"]["field"], "stages[0].x");
@@ -1129,6 +1333,16 @@ mod tests {
         assert_eq!(value["error"]["details"]["min"], 50);
         assert_eq!(value["error"]["details"]["max"], 26_000);
         assert_eq!(value["error"]["details"]["step"], 50);
+
+        let dpi = steelseries_core::validation::validate_dpi_values(
+            steelseries_core::DeviceModel::Aerox3Wired,
+            &[(49, 49)],
+        )
+        .unwrap_err();
+        let value: Value = serde_json::from_str(&error_document("dpi.set", &dpi)).unwrap();
+        assert_eq!(value["error"]["details"]["min"], 200);
+        assert_eq!(value["error"]["details"]["max"], 8500);
+        assert_eq!(value["error"]["details"]["step"], 100);
 
         let polling = Error::WiredPollingTooHigh { value: 2_000 };
         let value: Value = serde_json::from_str(&error_document("polling.set", &polling)).unwrap();

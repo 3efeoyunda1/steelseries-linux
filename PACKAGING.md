@@ -11,6 +11,17 @@ The application is distributed as two separate packages:
 
 The GUI package depends on the matching CLI package version. The CLI can be installed independently without GUI dependencies.
 
+## Versioning
+
+The workspace version in `Cargo.toml` is the source of the application version.
+The local packaging scripts read it and prepare temporary Arch, Debian, and
+Fedora package metadata with that version. They preserve the repository's
+packaging files and existing changelog history.
+
+For a standalone Arch release or AUR submission, update `arch/PKGBUILD` and
+regenerate `.SRCINFO` from the release version. Those files must provide the
+version before makepkg downloads the source archive.
+
 ## Building Packages
 
 Clone the repository:

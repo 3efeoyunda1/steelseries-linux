@@ -8,7 +8,7 @@ default-members = ["crates/steelseries-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.98.1"
 license = "MIT"
@@ -30,3 +30,7 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[patch.crates-io]
+# Reset Wayland buffer age on resize so Slint repaints the entire frame.
+softbuffer = { path = "crates/vendor/softbuffer" }

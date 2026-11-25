@@ -8,9 +8,10 @@ slint::slint! {
         from "../ui/app-window.slint";
 }
 
-const VIEWS: [&str; 6] = [
+const VIEWS: [&str; 7] = [
     "list",
     "settings",
+    "about",
     "dashboard",
     "empty",
     "error",
@@ -355,6 +356,42 @@ fn application_button_contexts_render_with_local_state() {
         time.set(time.get() + std::time::Duration::from_millis(250));
         slint::platform::update_timers_and_animations();
     };
+    // Render the same DPI stage with and without the optional control rows.
+    ui.set_dpi_rows(stages(1));
+    let wireless_pixels = render_dashboard();
+    let wired = DashboardData {
+        show_battery: false,
+        show_lod: false,
+        dpi_independent_axes: false,
+        dpi_min: 200,
+        dpi_max: 8500,
+        dpi_step: 100,
+        show_power: false,
+        show_wireless_stability: false,
+        show_bluetooth_smoothing: false,
+        show_scroll_jump: false,
+        show_wireless_polling: false,
+        wired_polling_primary: true,
+        ..dashboard.clone()
+    };
+    ui.set_dashboard(wired);
+    let wired_pixels = render_dashboard();
+    let card_fill = slint::Rgb8Pixel {
+        r: 27,
+        g: 27,
+        b: 27,
+    };
+    assert_ne!(wireless_pixels[240 * 1040 + 531], card_fill);
+    for y in [240, 535] {
+        assert!(
+            wired_pixels[y * 1040 + 34..y * 1040 + 1006]
+                .iter()
+                .all(|&pixel| pixel == card_fill),
+            "DPI and Polling must span both columns when there are no extra cards"
+        );
+    }
+    ui.set_dashboard(dashboard.clone());
+
     // Match the connected device's two stages and supported panel sections.
     ui.set_dpi_rows(stages(2));
     render_dashboard();

@@ -1,16 +1,18 @@
 use std::{fmt, process::ExitCode, str::FromStr};
 
+mod completion;
 mod output;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use steelseries_core::devices::aerox_3_wireless_gen2::{
-    auto_low_power_threshold, config_from_dpi_values, sleep_timer_from_minutes,
-    validate_dpi_values, validate_scroll_jump_delay, validate_stage_id,
-    validate_wired_polling_rate,
-};
+use clap_complete::engine::ArgValueCandidates;
 use steelseries_core::{
-    Aerox3WirelessGen2, BatteryStatus, DeviceModel, DpiConfig, DpiStage, Error, LiftOffDistance,
-    LowPowerPollingRate, PollingRate, PowerConfig,
+    BatteryStatus, Device, DeviceDriver, DeviceFeature, DeviceModel, DpiConfig, DpiStage, Error,
+    IdentitySource, LiftOffDistance, LowPowerPollingRate, PhysicalDevice, PollingCapabilities,
+    PollingRate, PowerConfig,
+    validation::{
+        auto_low_power_threshold, sleep_timer_from_minutes, validate_dpi_request,
+        validate_dpi_values, validate_scroll_jump_delay, validate_stage_id,
+    },
 };
 
 use output::{
@@ -23,7 +25,7 @@ use output::{
 
 const DPI_HELP: &str = "DPI commands:\n  steelseriesctl dpi get\n  steelseriesctl dpi set <dpi1|X1xY1> [dpi2|X2xY2] ... [dpi5|X5xY5]\n  steelseriesctl dpi use <stage-id>\n\nA single value applies to both axes; use XxY for independent axis values.";
 const LOD_HELP: &str = "Lift-off distance commands:\n  steelseriesctl lod get\n  steelseriesctl lod set low <stage-id>\n  steelseriesctl lod set high <stage-id>";
-const POLLING_HELP: &str = "Polling commands:\n  steelseriesctl polling get\n  steelseriesctl polling set wireless <125|250|500|1000|2000|4000>\n  steelseriesctl polling set wired <125|250|500|1000>";
+const POLLING_HELP: &str = "Polling commands:\n  steelseriesctl polling get\n  steelseriesctl polling set <HZ>\n  steelseriesctl polling set wired <HZ>\n  steelseriesctl polling set wireless <HZ>\n\nOmit the mode if the selected device supports only one polling mode.\nUse device describe to see the supported modes and rates.";
 const BATTERY_HELP: &str = "Battery commands:\n  steelseriesctl battery get";
 const POWER_HELP: &str = "Power Management commands:\n  steelseriesctl power get\n  steelseriesctl power low-power set <on|off>\n  steelseriesctl power low-power polling <125|250|500>\n  steelseriesctl power auto-low-power set <on|off>\n  steelseriesctl power auto-low-power threshold <5..25>\n  steelseriesctl power sleep set <minutes>";
 const WIRELESS_STABILITY_HELP: &str = "Wireless Stability Enhancement commands:\n  steelseriesctl wireless-stability get\n  steelseriesctl wireless-stability set <on|off>";
@@ -36,7 +38,7 @@ const ROOT_HELP: &str = "SteelSeries Linux CLI\n\nCommands:\n  device           
 #[command(name = "steelseriesctl", about = "SteelSeries Linux CLI", version)]
 struct Cli {
     /// Select a physical device by device ID.
-    #[arg(short = 'd', long, global = true, value_name = "ID")]
+    #[arg(short = 'd', long, global = true, value_name = "ID", add = ArgValueCandidates::new(completion::devices))]
     device: Option<String>,
     /// Emit a stable machine-readable JSON document.
     #[arg(long, global = true)]
@@ -190,10 +192,18 @@ enum LodCommand {
 
 #[derive(Debug, Subcommand)]
 enum PollingCommand {
-    /// Show wireless and wired polling rates.
+    /// Show polling rates.
     Get,
-    /// Change one connection mode while preserving the other.
-    Set { mode: PollingMode, rate: u16 },
+    /// Set a polling rate. Specify the mode when the device supports both.
+    #[command(
+        after_help = "Examples:\n  steelseriesctl polling set 500\n  steelseriesctl polling set wired 1000\n  steelseriesctl polling set wireless 4000"
+    )]
+    Set {
+        #[arg(value_name = "HZ|wired|wireless", add = ArgValueCandidates::new(completion::polling_inputs))]
+        mode_or_rate: PollingInput,
+        #[arg(value_name = "HZ", required_if_eq_any([("mode_or_rate", "wired"), ("mode_or_rate", "wireless")]))]
+        rate: Option<u16>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -246,7 +256,10 @@ enum LowPowerCommand {
     /// Enable or disable Low Power Mode.
     Set { state: PowerState },
     /// Set the polling rate used by Low Power Mode.
-    Polling { rate: u16 },
+    Polling {
+        #[arg(add = ArgValueCandidates::new(completion::low_power_rates))]
+        rate: u16,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -263,10 +276,30 @@ enum SleepCommand {
     Set { minutes: u64 },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PollingMode {
     Wireless,
     Wired,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PollingInput {
+    Mode(PollingMode),
+    Rate(u16),
+}
+
+impl FromStr for PollingInput {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "wired" => Ok(Self::Mode(PollingMode::Wired)),
+            "wireless" => Ok(Self::Mode(PollingMode::Wireless)),
+            _ => input.parse().map(Self::Rate).map_err(|_| {
+                format!("expected a polling rate in Hz, 'wired', or 'wireless', got '{input}'")
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -306,6 +339,9 @@ impl From<LodValue> for LiftOffDistance {
 }
 
 fn main() -> ExitCode {
+    if let Some(status) = completion::handle() {
+        return status;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => return handle_parse_error(error),
@@ -519,7 +555,7 @@ fn run_device(
 }
 
 fn run_device_list() -> Result<CommandOutput, Error> {
-    let devices = Aerox3WirelessGen2::discover()?;
+    let devices = Device::discover()?;
     let mut human = "SteelSeries devices:".to_owned();
     if devices.is_empty() {
         human.push_str("\n  No supported SteelSeries devices found.");
@@ -529,8 +565,9 @@ fn run_device_list() -> Result<CommandOutput, Error> {
             human.push('\n');
         }
         human.push_str(&format!(
-            "\n  {}\n    ID: {}\n    Connection: {}",
-            DeviceModel::Aerox3WirelessGen2,
+            "\n  {}\n    {}: {}\n    Connection: {}",
+            device.model,
+            device.identity.source().label(),
             device.identity,
             device.active_connection
         ));
@@ -543,24 +580,27 @@ fn run_device_list() -> Result<CommandOutput, Error> {
 }
 
 fn run_device_describe(requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
-    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
-    let physical_device = device.physical_device();
+    let device = Device::select(requested_identity)?;
+    let physical = device.physical_device();
     Ok(CommandOutput::new(
         "device.describe",
-        format_device_description(physical_device),
-        DeviceDescribeData::new(physical_device, Aerox3WirelessGen2::capabilities()),
+        format_device_description(physical),
+        DeviceDescribeData::new(physical, device.capabilities()),
     ))
 }
 
-fn format_device_identity(device: &steelseries_core::PhysicalDevice) -> String {
+fn format_device_identity(device: &PhysicalDevice) -> String {
     format!(
-        "Device: {}\nID: {}\nConnection: {}",
-        device.model, device.identity, device.active_connection
+        "Device: {}\n{}: {}\nConnection: {}",
+        device.model,
+        device.identity.source().label(),
+        device.identity,
+        device.active_connection
     )
 }
 
-fn format_device_description(device: &steelseries_core::PhysicalDevice) -> String {
-    let capabilities = Aerox3WirelessGen2::capabilities();
+fn format_device_description(device: &PhysicalDevice) -> String {
+    let caps = device.model.capabilities();
     let rates = |values: &[PollingRate]| {
         values
             .iter()
@@ -568,147 +608,232 @@ fn format_device_description(device: &steelseries_core::PhysicalDevice) -> Strin
             .collect::<Vec<_>>()
             .join("/")
     };
-    let low_power_rates = capabilities
-        .power
-        .low_power_polling
-        .iter()
-        .map(|rate| rate.hz().to_string())
-        .collect::<Vec<_>>()
-        .join("/");
-    format!(
-        "{}\n\nCapabilities:\nDPI: {}-{}, step {}, max {} stages, independent X/Y\nLOD: Low / High, per stage\nWireless Polling: {} Hz\nWired Polling: {} Hz\nBattery: Supported (charging state)\nLow Power Mode: Supported\nLow Power Polling: {} Hz\nSleep Timer: {}-{} min, step {}\nAuto Low Power Threshold: {}-{}%, step {}\nWireless Stability Enhancement: Supported\nBluetooth Smoothing: Supported\nScroll Jump Protection: {}-{} ms, step {}",
+    let mut lines = vec![
         format_device_identity(device),
-        capabilities.dpi.min,
-        capabilities.dpi.max,
-        capabilities.dpi.step,
-        capabilities.dpi.max_stages,
-        rates(capabilities.polling.wireless),
-        rates(capabilities.polling.wired),
-        low_power_rates,
-        capabilities.power.sleep_timer.min,
-        capabilities.power.sleep_timer.max,
-        capabilities.power.sleep_timer.step,
-        capabilities.power.auto_low_power_threshold.min,
-        capabilities.power.auto_low_power_threshold.max,
-        capabilities.power.auto_low_power_threshold.step,
-        capabilities.scroll_jump.delay.min,
-        capabilities.scroll_jump.delay.max,
-        capabilities.scroll_jump.delay.step,
-    )
+        "\nCapabilities:".to_owned(),
+        format!(
+            "DPI: {}-{}, step {}, max {} stages{}",
+            caps.dpi.min,
+            caps.dpi.max,
+            caps.dpi.step,
+            caps.dpi.max_stages,
+            if caps.dpi.independent_axes {
+                ", independent X/Y"
+            } else {
+                ""
+            }
+        ),
+    ];
+    if caps.lod.supported {
+        let values = caps
+            .lod
+            .values
+            .iter()
+            .map(|value| value.label)
+            .collect::<Vec<_>>()
+            .join(" / ");
+        let scope = if caps.lod.per_stage {
+            ", per stage"
+        } else {
+            ""
+        };
+        lines.push(format!("LOD: {values}{scope}"));
+    }
+    if !caps.polling.wireless.is_empty() {
+        lines.push(format!(
+            "Wireless Polling: {} Hz",
+            rates(caps.polling.wireless)
+        ));
+    }
+    if !caps.polling.wired.is_empty() {
+        lines.push(format!("Wired Polling: {} Hz", rates(caps.polling.wired)));
+    }
+    if caps.battery.supported {
+        let charging = if caps.battery.charging_state {
+            " (charging state)"
+        } else {
+            ""
+        };
+        lines.push(format!("Battery: Supported{charging}"));
+    }
+    if caps.power.low_power_mode {
+        lines.push("Low Power Mode: Supported".to_owned());
+    }
+    if !caps.power.low_power_polling.is_empty() {
+        let rates = caps
+            .power
+            .low_power_polling
+            .iter()
+            .map(|rate| rate.hz().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        lines.push(format!("Low Power Polling: {rates} Hz"));
+    }
+    if caps.power.sleep_timer.supported {
+        let timer = caps.power.sleep_timer;
+        lines.push(format!(
+            "Sleep Timer: {}-{} min, step {}",
+            timer.min, timer.max, timer.step
+        ));
+    }
+    if caps.power.auto_low_power_supported {
+        let threshold = caps.power.auto_low_power_threshold;
+        lines.push(format!(
+            "Auto Low Power Threshold: {}-{}%, step {}",
+            threshold.min, threshold.max, threshold.step
+        ));
+    }
+    if caps.wireless_features.wireless_stability.supported {
+        lines.push("Wireless Stability Enhancement: Supported".to_owned());
+    }
+    if caps.wireless_features.bluetooth_smoothing.supported {
+        lines.push("Bluetooth Smoothing: Supported".to_owned());
+    }
+    if caps.scroll_jump.supported {
+        let delay = caps.scroll_jump.delay;
+        lines.push(format!(
+            "Scroll Jump Protection: {}-{} ms, step {}",
+            delay.min, delay.max, delay.step
+        ));
+    }
+    lines.join("\n")
 }
 
 fn run_device_snapshot(requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
-    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
-    let physical_device = device.physical_device().clone();
-    let battery = device.get_battery_status()?;
-    let dpi = device.get_dpi_config()?;
-    let polling = device.get_polling_config()?;
-    let power = device.get_power_config()?;
-    let wireless_features = device.get_wireless_features()?;
-    let scroll_jump = device.get_scroll_jump_config()?;
+    let device = Device::select(requested_identity)?;
+    let physical = device.physical_device().clone();
+    let capabilities = device.capabilities();
+    let driver = device.open()?;
+    let battery = capabilities
+        .battery
+        .supported
+        .then(|| driver.get_battery_status())
+        .transpose()?;
+    let dpi = driver.get_dpi_config()?;
+    let polling = driver.get_polling_config()?;
+    let power = capabilities
+        .power
+        .supported
+        .then(|| driver.get_power_config())
+        .transpose()?;
+    let wireless_features = (capabilities.wireless_features.wireless_stability.supported
+        || capabilities.wireless_features.bluetooth_smoothing.supported)
+        .then(|| driver.get_wireless_features())
+        .transpose()?;
+    let scroll_jump = capabilities
+        .scroll_jump
+        .supported
+        .then(|| driver.get_scroll_jump_config())
+        .transpose()?;
     let data = DeviceSnapshotData::new(
-        &physical_device,
+        &physical,
         battery,
         &dpi,
         polling,
-        &power,
-        &wireless_features,
-        &scroll_jump,
+        power.as_ref(),
+        wireless_features.as_ref(),
+        scroll_jump.as_ref(),
     );
     let human = format_device_snapshot(&data);
     Ok(CommandOutput::new("device.snapshot", human, data))
 }
 
 fn format_device_snapshot(snapshot: &DeviceSnapshotData) -> String {
-    let battery = match (snapshot.battery.percentage, snapshot.battery.charging) {
-        (Some(percentage), Some(charging)) => format!(
-            "Battery: {percentage}%\nCharging: {}",
-            if charging { "Yes" } else { "No" }
-        ),
-        _ => "Battery: unavailable".to_owned(),
+    let id_label = if snapshot.device.id_source == IdentitySource::Custom.key() {
+        IdentitySource::Custom.label()
+    } else {
+        IdentitySource::Hardware.label()
     };
-    let mut dpi = vec!["DPI Stages:".to_owned()];
-    for stage in &snapshot.dpi.stages {
-        let marker = if stage.stage == snapshot.dpi.active_stage {
+    let connection = match snapshot.device.connection {
+        "wired" => "Wired",
+        "2.4_ghz" => "2.4 GHz",
+        value => value,
+    };
+    let mut sections = vec![format!(
+        "Device Snapshot:\nDevice: {}\n{id_label}: {}\nConnection: {connection}",
+        snapshot.device.name, snapshot.device.id
+    )];
+    if let Some(battery) = &snapshot.battery {
+        sections.push(match (battery.percentage, battery.charging) {
+            (Some(percentage), Some(charging)) => format!(
+                "Battery: {percentage}%\nCharging: {}",
+                if charging { "Yes" } else { "No" }
+            ),
+            _ => "Battery: unavailable".to_owned(),
+        });
+    }
+    let marker = |stage| {
+        if stage == snapshot.dpi.active_stage {
             '>'
         } else {
             ' '
-        };
+        }
+    };
+    let mut dpi = vec!["DPI Stages:".to_owned()];
+    for stage in &snapshot.dpi.stages {
         let value = if stage.x == stage.y {
             format!("{} DPI", stage.x)
         } else {
             format!("{}x{} DPI", stage.x, stage.y)
         };
-        dpi.push(format!("{marker} {}: {value}", stage.stage));
+        dpi.push(format!("{} {}: {value}", marker(stage.stage), stage.stage));
     }
-    let mut lod = vec!["Lift-off Distance:".to_owned()];
-    for stage in &snapshot.lod.stages {
-        let marker = if stage.stage == snapshot.dpi.active_stage {
-            '>'
-        } else {
-            ' '
-        };
-        let value = match stage.lod {
-            "low" => "Low (1 mm)",
-            "high" => "High (2 mm)",
-            value => value,
-        };
-        lod.push(format!("{marker} {}: {value}", stage.stage));
+    sections.push(dpi.join("\n"));
+    if let Some(lod) = &snapshot.lod {
+        let mut lines = vec!["Lift-off Distance:".to_owned()];
+        for stage in &lod.stages {
+            let value = match stage.lod {
+                "low" => "Low (1 mm)",
+                "high" => "High (2 mm)",
+                value => value,
+            };
+            lines.push(format!("{} {}: {value}", marker(stage.stage), stage.stage));
+        }
+        sections.push(lines.join("\n"));
     }
-    let sleep_timer = snapshot.power.sleep_timer_minutes.map_or_else(
-        || format!("{} ms", snapshot.power.sleep_timer_ms),
-        |minutes| format!("{minutes} min"),
-    );
-    format!(
-        "Device Snapshot:\nDevice: {}\nID: {}\nConnection: {}\n\n{}\n\n{}\n\n{}\n\nPolling Rate:\n  Wireless: {} Hz\n  Wired:    {} Hz\n\nPower Management:\nLow Power Mode: {}\nLow Power Polling: {} Hz\nSleep Timer: {}\nAuto Low Power: {}\nAuto Low Power Threshold: {}%\n\nWireless Stability Enhancement: {}\nBluetooth Smoothing: {}\nScroll Jump Protection: {}\nDelay: {} ms",
-        snapshot.device.name,
-        snapshot.device.id,
-        match snapshot.device.connection {
-            "wired" => "Wired",
-            "2.4_ghz" => "2.4 GHz",
-            value => value,
-        },
-        battery,
-        dpi.join("\n"),
-        lod.join("\n"),
-        snapshot.polling.wireless_hz,
-        snapshot.polling.wired_hz,
-        if snapshot.power.low_power_enabled {
-            "On"
-        } else {
-            "Off"
-        },
-        snapshot.power.low_power_polling_hz,
-        sleep_timer,
-        if snapshot.power.auto_low_power_enabled {
-            "On"
-        } else {
-            "Off"
-        },
-        snapshot.power.auto_low_power_threshold_percent,
-        if snapshot.wireless_stability.enabled {
-            "On"
-        } else {
-            "Off"
-        },
-        if snapshot.bluetooth_smoothing.enabled {
-            "On"
-        } else {
-            "Off"
-        },
-        if snapshot.scroll_jump.enabled {
-            "On"
-        } else {
-            "Off"
-        },
-        snapshot.scroll_jump.delay_ms,
-    )
+    sections.push(format_polling(&snapshot.polling));
+    let on_off = |enabled| if enabled { "On" } else { "Off" };
+    if let Some(power) = &snapshot.power {
+        let timer = power.sleep_timer_minutes.map_or_else(
+            || format!("{} ms", power.sleep_timer_ms),
+            |minutes| format!("{minutes} min"),
+        );
+        sections.push(format!(
+            "Power Management:\nLow Power Mode: {}\nLow Power Polling: {} Hz\nSleep Timer: {timer}\nAuto Low Power: {}\nAuto Low Power Threshold: {}%",
+            on_off(power.low_power_enabled), power.low_power_polling_hz,
+            on_off(power.auto_low_power_enabled), power.auto_low_power_threshold_percent));
+    }
+    let mut features = Vec::new();
+    if let Some(state) = &snapshot.wireless_stability {
+        features.push(format_wireless_stability(state.enabled));
+    }
+    if let Some(state) = &snapshot.bluetooth_smoothing {
+        features.push(format_bluetooth_smoothing(state.enabled));
+    }
+    if let Some(state) = &snapshot.scroll_jump {
+        features.push(format_scroll_jump(state.enabled, state.delay_ms));
+    }
+    if !features.is_empty() {
+        sections.push(features.join("\n"));
+    }
+    sections.join("\n\n")
+}
+
+fn open_device(
+    requested_identity: Option<&str>,
+    feature: Option<DeviceFeature>,
+) -> Result<Box<dyn DeviceDriver>, Error> {
+    let device = Device::select(requested_identity)?;
+    if let Some(feature) = feature {
+        feature.require(device.physical_device().model)?;
+    }
+    device.open()
 }
 
 fn run_dpi(command: DpiCommand, requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
     match command {
         DpiCommand::Get => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, None)?;
             let config = device.get_dpi_config()?;
             Ok(CommandOutput::new(
                 "dpi.get",
@@ -718,11 +843,13 @@ fn run_dpi(command: DpiCommand, requested_identity: Option<&str>) -> Result<Comm
         }
         DpiCommand::Set { dpis } => {
             let values = dpis.iter().map(|dpi| (dpi.x, dpi.y)).collect::<Vec<_>>();
-            validate_dpi_values(&values)?;
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
-            let current = device.get_dpi_config()?;
-            let updated = config_from_dpi_values(&current, &values)?;
-            device.set_dpi_config(&updated)?;
+            if requested_identity.is_none() {
+                validate_dpi_request(&values)?;
+            }
+            let selected = Device::select(requested_identity)?;
+            validate_dpi_values(selected.physical_device().model, &values)?;
+            let device = selected.open()?;
+            let updated = device.replace_dpi_stages(&values)?;
             device.commit()?;
             Ok(CommandOutput::new(
                 "dpi.set",
@@ -731,7 +858,7 @@ fn run_dpi(command: DpiCommand, requested_identity: Option<&str>) -> Result<Comm
             ))
         }
         DpiCommand::Use { stage_id } => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, None)?;
             device.set_active_dpi_stage(stage_id)?;
             device.commit()?;
             Ok(CommandOutput::new(
@@ -772,7 +899,7 @@ fn dpi_stages_updated_message(dpis: &[DpiInput]) -> String {
 }
 
 fn run_lod(command: LodCommand, requested_identity: Option<&str>) -> Result<CommandOutput, Error> {
-    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+    let device = open_device(requested_identity, Some(DeviceFeature::LiftOffDistance))?;
     match command {
         LodCommand::Get => {
             let config = device.get_dpi_config()?;
@@ -813,26 +940,33 @@ fn run_polling(
 ) -> Result<CommandOutput, Error> {
     match command {
         PollingCommand::Get => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
-            let config = device.get_polling_config()?;
+            let selected = Device::select(requested_identity)?;
+            require_polling(
+                selected.physical_device().model,
+                selected.capabilities().polling,
+            )?;
+            let device = selected.open()?;
+            let data = PollingData::from(device.get_polling_config()?);
             Ok(CommandOutput::new(
                 "polling.get",
-                format!(
-                    "Polling Rate:\n  Wireless: {}\n  Wired:    {}",
-                    config.wireless, config.wired
-                ),
-                PollingData {
-                    wireless_hz: config.wireless.hz(),
-                    wired_hz: config.wired.hz(),
-                },
+                format_polling(&data),
+                data,
             ))
         }
-        PollingCommand::Set { mode, rate } => {
-            let rate = PollingRate::try_from(rate)?;
-            if matches!(mode, PollingMode::Wired) {
-                validate_wired_polling_rate(rate)?;
-            }
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+        PollingCommand::Set { mode_or_rate, rate } => {
+            let (mode, hz) = match (mode_or_rate, rate) {
+                (PollingInput::Mode(mode), Some(hz)) => (Some(mode), hz),
+                (PollingInput::Rate(hz), None) => (None, hz),
+                _ => return Err(Error::InvalidPollingArguments),
+            };
+            let selected = Device::select(requested_identity)?;
+            let (mode, rate) = resolve_polling_rate(
+                selected.physical_device().model,
+                selected.capabilities().polling,
+                mode,
+                hz,
+            )?;
+            let device = selected.open()?;
             match mode {
                 PollingMode::Wireless => device.set_wireless_polling(rate)?,
                 PollingMode::Wired => device.set_wired_polling(rate)?,
@@ -857,13 +991,74 @@ fn run_polling(
     }
 }
 
+fn require_polling(model: DeviceModel, caps: PollingCapabilities) -> Result<(), Error> {
+    if caps.supported && (!caps.wired.is_empty() || !caps.wireless.is_empty()) {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedFeature {
+            model,
+            feature: "polling rate",
+        })
+    }
+}
+
+fn resolve_polling_rate(
+    model: DeviceModel,
+    caps: PollingCapabilities,
+    mode: Option<PollingMode>,
+    hz: u16,
+) -> Result<(PollingMode, PollingRate), Error> {
+    require_polling(model, caps)?;
+    let mode = match mode {
+        Some(mode) => mode,
+        None => match (caps.wired.first(), caps.wireless.first()) {
+            (Some(wired), Some(wireless)) => {
+                return Err(Error::PollingModeRequired {
+                    wired_hz: wired.hz(),
+                    wireless_hz: wireless.hz(),
+                });
+            }
+            (Some(_), None) => PollingMode::Wired,
+            _ => PollingMode::Wireless,
+        },
+    };
+    let (connection, feature, rates) = match mode {
+        PollingMode::Wired => ("wired", "wired polling", caps.wired),
+        PollingMode::Wireless => ("wireless", "wireless polling", caps.wireless),
+    };
+    if rates.is_empty() {
+        return Err(Error::UnsupportedFeature { model, feature });
+    }
+    let rate =
+        rates
+            .iter()
+            .copied()
+            .find(|rate| rate.hz() == hz)
+            .ok_or(Error::InvalidPollingRate {
+                connection,
+                hz,
+                allowed: rates,
+            })?;
+    Ok((mode, rate))
+}
+
+fn format_polling(polling: &PollingData) -> String {
+    match polling.wireless_hz {
+        Some(wireless) => format!(
+            "Polling Rate:\n  Wireless: {wireless} Hz\n  Wired:    {} Hz",
+            polling.wired_hz
+        ),
+        None => format!("Polling Rate:\n  Wired: {} Hz", polling.wired_hz),
+    }
+}
+
 fn run_battery(
     command: BatteryCommand,
     requested_identity: Option<&str>,
 ) -> Result<CommandOutput, Error> {
     match command {
         BatteryCommand::Get => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, Some(DeviceFeature::Battery))?;
             let status = device.get_battery_status()?;
             Ok(CommandOutput::new(
                 "battery.get",
@@ -890,7 +1085,7 @@ fn run_power(
 ) -> Result<CommandOutput, Error> {
     match command {
         PowerCommand::Get => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, Some(DeviceFeature::Power))?;
             let config = device.get_power_config()?;
             Ok(CommandOutput::new(
                 "power.get",
@@ -900,7 +1095,7 @@ fn run_power(
         }
         PowerCommand::LowPower { command } => match command {
             LowPowerCommand::Set { state } => {
-                let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+                let device = open_device(requested_identity, Some(DeviceFeature::Power))?;
                 device.set_low_power_enabled(state.enabled())?;
                 device.commit()?;
                 Ok(CommandOutput::new(
@@ -913,7 +1108,7 @@ fn run_power(
             }
             LowPowerCommand::Polling { rate } => {
                 let rate = LowPowerPollingRate::try_from(rate)?;
-                let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+                let device = open_device(requested_identity, Some(DeviceFeature::Power))?;
                 device.set_low_power_polling(rate)?;
                 device.commit()?;
                 Ok(CommandOutput::new(
@@ -927,7 +1122,7 @@ fn run_power(
         },
         PowerCommand::AutoLowPower { command } => match command {
             AutoLowPowerCommand::Set { state } => {
-                let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+                let device = open_device(requested_identity, Some(DeviceFeature::Power))?;
                 device.set_auto_low_power_enabled(state.enabled())?;
                 device.commit()?;
                 Ok(CommandOutput::new(
@@ -940,7 +1135,7 @@ fn run_power(
             }
             AutoLowPowerCommand::Threshold { percent } => {
                 let threshold = auto_low_power_threshold(percent)?;
-                let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+                let device = open_device(requested_identity, Some(DeviceFeature::Power))?;
                 device.set_auto_low_power_threshold(threshold)?;
                 device.commit()?;
                 Ok(CommandOutput::new(
@@ -955,7 +1150,7 @@ fn run_power(
         PowerCommand::Sleep { command } => match command {
             SleepCommand::Set { minutes } => {
                 let timer = sleep_timer_from_minutes(minutes)?;
-                let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+                let device = open_device(requested_identity, Some(DeviceFeature::Power))?;
                 device.set_sleep_timer(timer)?;
                 device.commit()?;
                 Ok(CommandOutput::new(
@@ -993,7 +1188,7 @@ fn run_wireless_stability(
     command: FeatureToggleCommand,
     requested_identity: Option<&str>,
 ) -> Result<CommandOutput, Error> {
-    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+    let device = open_device(requested_identity, Some(DeviceFeature::WirelessStability))?;
     match command {
         FeatureToggleCommand::Get => {
             let features = device.get_wireless_features()?;
@@ -1032,7 +1227,7 @@ fn run_bluetooth_smoothing(
     command: FeatureToggleCommand,
     requested_identity: Option<&str>,
 ) -> Result<CommandOutput, Error> {
-    let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+    let device = open_device(requested_identity, Some(DeviceFeature::BluetoothSmoothing))?;
     match command {
         FeatureToggleCommand::Get => {
             let features = device.get_wireless_features()?;
@@ -1096,7 +1291,7 @@ fn run_scroll_jump(
 ) -> Result<CommandOutput, Error> {
     match command {
         ScrollJumpCommand::Get => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, Some(DeviceFeature::ScrollJump))?;
             let config = device.get_scroll_jump_config()?;
             Ok(CommandOutput::new(
                 "scroll-jump.get",
@@ -1108,7 +1303,7 @@ fn run_scroll_jump(
             ))
         }
         ScrollJumpCommand::Set { state } => {
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, Some(DeviceFeature::ScrollJump))?;
             apply_scroll_jump_change(
                 || device.set_scroll_jump_enabled(state.enabled()),
                 || device.commit(),
@@ -1130,7 +1325,7 @@ fn run_scroll_jump(
         }
         ScrollJumpCommand::Delay { milliseconds } => {
             validate_scroll_jump_delay(milliseconds)?;
-            let device = Aerox3WirelessGen2::open_selected(requested_identity)?;
+            let device = open_device(requested_identity, Some(DeviceFeature::ScrollJump))?;
             apply_scroll_jump_change(
                 || device.set_scroll_jump_delay(milliseconds),
                 || device.commit(),
@@ -1450,15 +1645,19 @@ mod tests {
     fn formats_device_snapshot_human_output() {
         let snapshot = DeviceSnapshotData {
             device: DeviceData {
+                battery_supported: true,
                 id: "6271700431492500250".to_owned(),
+                id_source: "hardware",
+                wired_endpoint_available: true,
+                receiver_endpoint_available: false,
                 name: "Aerox 3 Wireless Gen 2",
                 model_key: "aerox_3_wireless_gen2",
                 connection: "2.4_ghz",
             },
-            battery: BatteryData {
+            battery: Some(BatteryData {
                 percentage: Some(87),
                 charging: Some(false),
-            },
+            }),
             dpi: DpiData {
                 active_stage: 2,
                 stages: vec![
@@ -1474,7 +1673,7 @@ mod tests {
                     },
                 ],
             },
-            lod: LodData {
+            lod: Some(LodData {
                 stages: vec![
                     LodStageData {
                         stage: 1,
@@ -1485,25 +1684,25 @@ mod tests {
                         lod: "high",
                     },
                 ],
-            },
+            }),
             polling: PollingData {
-                wireless_hz: 4_000,
+                wireless_hz: Some(4_000),
                 wired_hz: 1_000,
             },
-            power: PowerData {
+            power: Some(PowerData {
                 low_power_enabled: false,
                 low_power_polling_hz: 500,
                 sleep_timer_minutes: Some(5),
                 sleep_timer_ms: 300_000,
                 auto_low_power_enabled: true,
                 auto_low_power_threshold_percent: 10,
-            },
-            wireless_stability: EnabledData { enabled: true },
-            bluetooth_smoothing: EnabledData { enabled: false },
-            scroll_jump: ScrollJumpData {
+            }),
+            wireless_stability: Some(EnabledData { enabled: true }),
+            bluetooth_smoothing: Some(EnabledData { enabled: false }),
+            scroll_jump: Some(ScrollJumpData {
                 enabled: true,
                 delay_ms: 500,
-            },
+            }),
         };
         let output = format_device_snapshot(&snapshot);
         assert_eq!(
@@ -1608,11 +1807,172 @@ mod tests {
             cli.command,
             Some(Command::Polling {
                 command: Some(PollingCommand::Set {
-                    mode: PollingMode::Wireless,
-                    rate: 1000,
+                    mode_or_rate: super::PollingInput::Mode(PollingMode::Wireless),
+                    rate: Some(1000),
                 })
             })
         ));
+    }
+
+    #[test]
+    fn parses_short_and_explicit_polling_set_forms_with_global_options() {
+        let cli = Cli::try_parse_from([
+            "steelseriesctl",
+            "-d",
+            "mouse",
+            "polling",
+            "set",
+            "500",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(cli.device.as_deref(), Some("mouse"));
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Polling {
+                command: Some(PollingCommand::Set {
+                    mode_or_rate: super::PollingInput::Rate(500),
+                    rate: None
+                })
+            })
+        ));
+
+        for (input, expected) in [
+            ("wired", PollingMode::Wired),
+            ("wireless", PollingMode::Wireless),
+        ] {
+            let cli = Cli::try_parse_from([
+                "steelseriesctl",
+                "polling",
+                "set",
+                input,
+                "--json",
+                "1000",
+                "--device",
+                "mouse",
+            ])
+            .unwrap();
+            assert!(matches!(cli.command, Some(Command::Polling {
+                command: Some(PollingCommand::Set { mode_or_rate: super::PollingInput::Mode(mode), rate: Some(1000) })
+            }) if mode == expected));
+        }
+        assert!(Cli::try_parse_from(["steelseriesctl", "polling", "set", "wired"]).is_err());
+        assert!(Cli::try_parse_from(["steelseriesctl", "polling", "set", "invalid"]).is_err());
+    }
+
+    #[test]
+    fn infers_wired_and_wireless_from_single_mode_capabilities() {
+        use super::{PollingCapabilities, PollingRate, resolve_polling_rate};
+        for (caps, expected) in [
+            (
+                PollingCapabilities {
+                    supported: true,
+                    wired: &[PollingRate::Hz500],
+                    wireless: &[],
+                },
+                PollingMode::Wired,
+            ),
+            (
+                PollingCapabilities {
+                    supported: true,
+                    wired: &[],
+                    wireless: &[PollingRate::Hz500],
+                },
+                PollingMode::Wireless,
+            ),
+        ] {
+            let result =
+                resolve_polling_rate(DeviceModel::Aerox3WirelessGen2, caps, None, 500).unwrap();
+            assert_eq!(result, (expected, PollingRate::Hz500));
+        }
+    }
+
+    #[test]
+    fn dual_mode_polling_requires_explicit_mode_and_suggests_valid_examples() {
+        use super::{Error, PollingCapabilities, PollingRate, resolve_polling_rate};
+        let caps = PollingCapabilities {
+            supported: true,
+            wired: &[PollingRate::Hz500],
+            wireless: &[PollingRate::Hz4000],
+        };
+        let error = resolve_polling_rate(DeviceModel::Aerox3Wired, caps, None, 500).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::PollingModeRequired {
+                wired_hz: 500,
+                wireless_hz: 4000
+            }
+        ));
+        let document: serde_json::Value =
+            serde_json::from_str(&super::error_document("polling.set", &error)).unwrap();
+        assert_eq!(document["error"]["code"], "invalid_argument");
+        assert_eq!(document["error"]["field"], "mode");
+        assert!(
+            error
+                .to_string()
+                .contains("steelseriesctl polling set wired 500")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("steelseriesctl polling set wireless 4000")
+        );
+        assert_eq!(
+            resolve_polling_rate(
+                DeviceModel::Aerox3Wired,
+                caps,
+                Some(PollingMode::Wireless),
+                4000
+            )
+            .unwrap(),
+            (PollingMode::Wireless, PollingRate::Hz4000)
+        );
+    }
+
+    #[test]
+    fn unsupported_polling_and_invalid_rates_use_selected_capabilities() {
+        use super::{Error, PollingCapabilities, PollingRate, resolve_polling_rate};
+        let model = DeviceModel::Aerox3Wired;
+        let caps = PollingCapabilities {
+            supported: true,
+            wired: &[PollingRate::Hz500],
+            wireless: &[],
+        };
+        assert!(matches!(
+            resolve_polling_rate(model, caps, Some(PollingMode::Wireless), 500),
+            Err(Error::UnsupportedFeature {
+                feature: "wireless polling",
+                ..
+            })
+        ));
+        assert!(matches!(
+            resolve_polling_rate(
+                model,
+                PollingCapabilities {
+                    supported: false,
+                    ..caps
+                },
+                None,
+                500
+            ),
+            Err(Error::UnsupportedFeature {
+                feature: "polling rate",
+                ..
+            })
+        ));
+        for hz in [1000, 333] {
+            let error = resolve_polling_rate(model, caps, None, hz).unwrap_err();
+            let document: serde_json::Value =
+                serde_json::from_str(&super::error_document("polling.set", &error)).unwrap();
+            assert_eq!(document["error"]["code"], "invalid_argument");
+            assert_eq!(document["error"]["field"], "wired_hz");
+            assert_eq!(document["error"]["details"]["value"], hz);
+            assert_eq!(
+                document["error"]["details"]["allowed"],
+                serde_json::json!([500])
+            );
+        }
     }
 
     #[test]

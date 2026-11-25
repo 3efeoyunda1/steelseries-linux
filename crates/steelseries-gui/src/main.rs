@@ -3,6 +3,7 @@ mod cli;
 mod dashboard;
 mod dpi_curve;
 mod monitor;
+mod notifications;
 mod runtime;
 mod settings;
 mod single_instance;
@@ -29,8 +30,8 @@ use dpi_curve::DpiCurve;
 use monitor::{CachedBattery, MonitorState};
 use runtime::{MonitorController, MonitorEvent};
 use settings::{
-    GuiSettings, KnownDevice, REFRESH_INTERVAL_OPTIONS, TrayIconTheme, autostart_path,
-    set_autostart_enabled, settings_path,
+    CRITICAL_BATTERY_OPTIONS, GuiSettings, KnownDevice, LOW_BATTERY_OPTIONS,
+    REFRESH_INTERVAL_OPTIONS, TrayIconTheme, autostart_path, set_autostart_enabled, settings_path,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tray::{TrayAction, TrayController, TrayState};
@@ -203,16 +204,23 @@ fn main() -> Result<(), slint::PlatformError> {
     let latest_event = Arc::new(Mutex::new(None));
     let monitor_latest_event = Arc::clone(&latest_event);
     let monitor_tray = Arc::clone(&tray);
+    let scan_revision = Arc::new(AtomicU64::new(0));
+    let event_revision = Arc::clone(&scan_revision);
     let monitor = MonitorController::start(
         client.clone(),
         initial_settings,
         config_path,
+        scan_revision,
         move |event| {
             update_tray(&monitor_tray, &event);
             if let Ok(mut latest) = monitor_latest_event.lock() {
                 *latest = Some(event.clone());
             }
+            let revision = Arc::clone(&event_revision);
             let _ = slint::invoke_from_event_loop(move || {
+                if event.scan_revision != revision.load(Ordering::Relaxed) {
+                    return;
+                }
                 MAIN_WINDOW.with_borrow(|window| {
                     if let Some(ui) = window {
                         apply_monitor_event(ui, event);
@@ -291,6 +299,7 @@ fn open_main_window(context: &WindowContext) -> Result<(), slint::PlatformError>
             });
             if let Ok(latest) = context.latest_event.lock()
                 && let Some(event) = latest.as_ref()
+                && context.monitor.event_is_current(event)
             {
                 apply_monitor_event(&ui, event.clone());
             }
@@ -397,17 +406,15 @@ fn wire_callbacks(
     });
 
     let back_ui = ui.as_weak();
+    let back_monitor = monitor.clone();
     let back_generation = Arc::clone(dashboard_generation);
     let back_lifecycle = Arc::clone(lifecycle);
     ui.on_back_requested(move || {
         back_generation.fetch_add(1, Ordering::Relaxed);
         if let Some(ui) = back_ui.upgrade() {
             begin_page_change(&ui, &back_lifecycle);
-            ui.set_view_state(if ui.get_devices().row_count() == 0 {
-                "empty".into()
-            } else {
-                "list".into()
-            });
+            ui.set_view_state("loading".into());
+            back_monitor.refresh();
         }
     });
 
@@ -423,6 +430,71 @@ fn wire_settings_callbacks(
     tray: &Arc<Mutex<TrayController>>,
     lifecycle: &Arc<Mutex<WindowLifecycle>>,
 ) {
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    let about_ui = ui.as_weak();
+    let about_lifecycle = Arc::clone(lifecycle);
+    ui.on_about_requested(move || {
+        if let Some(ui) = about_ui.upgrade() {
+            begin_page_change(&ui, &about_lifecycle);
+            ui.set_view_state("about".into());
+        }
+    });
+    let about_ui = ui.as_weak();
+    let about_lifecycle = Arc::clone(lifecycle);
+    ui.on_about_back_requested(move || {
+        if let Some(ui) = about_ui.upgrade() {
+            begin_page_change(&ui, &about_lifecycle);
+            ui.set_view_state("settings".into());
+        }
+    });
+    ui.on_about_link_requested(|index| {
+        let url = match index {
+            0 => "https://github.com/3efeoyunda1/steelseries-linux",
+            1 => "https://github.com/3efeoyunda1/steelseries-linux/releases",
+            2 => "https://github.com/3efeoyunda1/steelseries-linux/issues",
+            _ => return,
+        };
+        if let Err(error) = webbrowser::open(url) {
+            eprintln!("steelseries-linux-gui: could not open browser: {error}");
+        }
+    });
+
+    let notification_monitor = monitor.clone();
+    let notification_ui = ui.as_weak();
+    ui.on_battery_notifications_changed(move || {
+        if let Ok(mut settings) = notification_monitor.settings.lock() {
+            settings.battery_notifications = !settings.battery_notifications;
+            if let Some(ui) = notification_ui.upgrade() {
+                ui.set_battery_notifications(settings.battery_notifications);
+            }
+        }
+        notification_monitor.settings_changed();
+    });
+    let low_monitor = monitor.clone();
+    ui.on_low_battery_selected(move |index| {
+        if let Some(threshold) = usize::try_from(index)
+            .ok()
+            .and_then(|index| LOW_BATTERY_OPTIONS.get(index))
+        {
+            if let Ok(mut settings) = low_monitor.settings.lock() {
+                settings.low_battery_threshold = *threshold;
+            }
+            low_monitor.settings_changed();
+        }
+    });
+    let critical_monitor = monitor.clone();
+    ui.on_critical_battery_selected(move |index| {
+        if let Some(threshold) = usize::try_from(index)
+            .ok()
+            .and_then(|index| CRITICAL_BATTERY_OPTIONS.get(index))
+        {
+            if let Ok(mut settings) = critical_monitor.settings.lock() {
+                settings.critical_battery_threshold = *threshold;
+            }
+            critical_monitor.settings_changed();
+        }
+    });
+
     let settings_ui = ui.as_weak();
     let settings_lifecycle = Arc::clone(lifecycle);
     ui.on_settings_requested(move || {
@@ -433,15 +505,13 @@ fn wire_settings_callbacks(
     });
 
     let back_ui = ui.as_weak();
+    let back_monitor = monitor.clone();
     let back_lifecycle = Arc::clone(lifecycle);
     ui.on_settings_back_requested(move || {
         if let Some(ui) = back_ui.upgrade() {
             begin_page_change(&ui, &back_lifecycle);
-            ui.set_view_state(if ui.get_devices().row_count() == 0 {
-                "empty".into()
-            } else {
-                "list".into()
-            });
+            ui.set_view_state("loading".into());
+            back_monitor.refresh();
         }
     });
 
@@ -1409,22 +1479,22 @@ fn start_dashboard_load(
 
 fn apply_monitor_event(ui: &AppWindow, event: MonitorEvent) {
     apply_settings(ui, &event.settings, &event.state);
-    apply_devices(
-        ui,
-        event.state.active_devices.clone(),
-        &event.state.batteries,
-    );
-
     let view = ui.get_view_state();
     if let Some(error) = event.error {
-        if matches!(view.as_str(), "loading" | "list" | "empty" | "error")
-            && event.state.active_devices.is_empty()
+        if view == "loading"
+            || (matches!(view.as_str(), "list" | "empty" | "error")
+                && event.state.active_devices.is_empty())
         {
             ui.set_error_message(error.into());
             ui.set_view_state("error".into());
         }
         return;
     }
+    apply_devices(
+        ui,
+        event.state.active_devices.clone(),
+        &event.state.batteries,
+    );
     ui.set_error_message(SharedString::default());
     if matches!(view.as_str(), "loading" | "list" | "empty" | "error") {
         ui.set_view_state(if event.state.active_devices.is_empty() {
@@ -1482,6 +1552,19 @@ fn tray_state(event: &MonitorEvent) -> TrayState {
 }
 
 fn apply_settings(ui: &AppWindow, settings: &GuiSettings, state: &MonitorState) {
+    ui.set_battery_notifications(settings.battery_notifications);
+    ui.set_low_battery_index(
+        LOW_BATTERY_OPTIONS
+            .iter()
+            .position(|value| *value == settings.low_battery_threshold)
+            .unwrap_or(1) as i32,
+    );
+    ui.set_critical_battery_index(
+        CRITICAL_BATTERY_OPTIONS
+            .iter()
+            .position(|value| *value == settings.critical_battery_threshold)
+            .unwrap_or(1) as i32,
+    );
     ui.set_tray_enabled(settings.tray_enabled);
     ui.set_tray_icon_theme_index(settings.tray_icon_theme.index());
     ui.set_start_at_login(settings.start_at_login);
@@ -1490,7 +1573,7 @@ fn apply_settings(ui: &AppWindow, settings: &GuiSettings, state: &MonitorState) 
             .iter()
             .position(|value| *value == settings.refresh_interval_seconds)
             .and_then(|index| i32::try_from(index).ok())
-            .unwrap_or(2),
+            .unwrap_or(3),
     );
     let known = settings
         .device_priority
@@ -1523,7 +1606,6 @@ fn known_device_row(device: &KnownDevice, state: &MonitorState) -> KnownDeviceIt
 }
 
 fn apply_devices(ui: &AppWindow, devices: Vec<Device>, batteries: &HashMap<String, CachedBattery>) {
-    let is_empty = devices.is_empty();
     let rows = devices
         .into_iter()
         .map(|device| {
@@ -1532,13 +1614,6 @@ fn apply_devices(ui: &AppWindow, devices: Vec<Device>, batteries: &HashMap<Strin
         })
         .collect::<Vec<_>>();
     ui.set_devices(Rc::new(VecModel::from(rows)).into());
-    if matches!(ui.get_view_state().as_str(), "loading" | "list" | "empty") {
-        ui.set_view_state(if is_empty {
-            "empty".into()
-        } else {
-            "list".into()
-        });
-    }
 }
 
 fn apply_dashboard(ui: &AppWindow, view: DashboardView) {
@@ -1573,13 +1648,12 @@ fn apply_dashboard(ui: &AppWindow, view: DashboardView) {
     ui.set_wireless_polling_options(string_model(view.wireless_polling_options.clone()));
     ui.set_wired_polling_options(string_model(view.wired_polling_options.clone()));
     ui.set_low_power_polling_options(string_model(view.low_power_polling_options.clone()));
-    let device_id_label = identity_label(&view.device_id);
     ui.set_dashboard(DashboardData {
         device_name: view.device_name.into(),
         connection: view.connection.into(),
         connection_key: view.connection_key.into(),
         device_id: view.device_id.into(),
-        device_id_label: device_id_label.into(),
+        device_id_label: view.device_id_label.into(),
         model_key: view.model_key.into(),
         show_battery: view.show_battery,
         battery: view.battery.into(),
@@ -1686,7 +1760,7 @@ fn string_model(values: Vec<String>) -> ModelRc<SharedString> {
 }
 
 fn device_row(device: Device, battery: Option<&CachedBattery>) -> DeviceItem {
-    let identity_label = identity_label(&device.id);
+    let identity_label = device.identity_label();
     DeviceItem {
         name: device.name.into(),
         connection: connection_label(&device.connection).into(),
@@ -1704,10 +1778,6 @@ fn device_row(device: Device, battery: Option<&CachedBattery>) -> DeviceItem {
             battery.is_some_and(|battery| battery.charging == Some(true)),
         ),
     }
-}
-
-fn identity_label(identity: &str) -> String {
-    format!("ID: {identity}")
 }
 
 fn connection_label(connection: &str) -> &str {
@@ -1757,8 +1827,10 @@ mod tests {
     fn device_row_preserves_identity_model_and_raw_connection() {
         let row = device_row(
             Device {
+                battery_supported: Some(true),
                 connection: "wired".to_owned(),
                 id: "AAA".to_owned(),
+                id_source: String::new(),
                 model_key: "aerox_3_wireless_gen2".to_owned(),
                 name: "Aerox 3 Wireless Gen 2".to_owned(),
             },
@@ -1776,8 +1848,10 @@ mod tests {
     #[test]
     fn tray_and_device_row_derive_battery_from_the_same_monitor_cache() {
         let device = Device {
+            battery_supported: Some(true),
             connection: "wired".to_owned(),
             id: "AAA".to_owned(),
+            id_source: String::new(),
             model_key: "aerox_3_wireless_gen2".to_owned(),
             name: "Aerox 3 Wireless Gen 2".to_owned(),
         };
@@ -1792,6 +1866,7 @@ mod tests {
         };
         state.batteries.insert(device.id.clone(), battery.clone());
         let event = MonitorEvent {
+            scan_revision: 0,
             settings: GuiSettings::default(),
             state,
             error: None,

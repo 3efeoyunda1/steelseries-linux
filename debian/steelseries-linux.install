@@ -2,3 +2,6 @@ target/release/steelseriesctl usr/bin
 udev/70-steelseries-linux.rules usr/lib/udev/rules.d
 README.md usr/share/doc/steelseries-linux
 LICENSE usr/share/doc/steelseries-linux
+target/completions/steelseriesctl usr/share/bash-completion/completions
+target/completions/_steelseriesctl usr/share/zsh/site-functions
+target/completions/steelseriesctl.fish usr/share/fish/vendor_completions.d

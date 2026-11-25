@@ -1,31 +1,37 @@
 # SteelSeries Linux
 
-Unofficial Linux control utility for supported SteelSeries devices.
+An unofficial, open-source Linux control utility for supported SteelSeries devices.
 
-> This project is in early development and is not affiliated with or endorsed by SteelSeries.
+SteelSeries Linux provides native device configuration through a command-line interface and a graphical application, without requiring SteelSeries GG or Wine.
 
 ## Supported hardware
 
 | Device | USB endpoints | Status |
 | --- | --- | --- |
 | Aerox 3 Wireless Gen 2 | `1038:1890` 2.4 GHz receiver, `1038:1892` wired USB | Supported |
+| Aerox 3 Wired | `1038:1836` wired USB | Supported |
 
-Aerox 3, Aerox 3 Wireless, and Aerox 3 Wireless Gen 2 are treated as separate devices. Protocol compatibility is not assumed between models.
+Aerox 3 Wired, Aerox 3 Wireless, and Aerox 3 Wireless Gen 2 are treated as separate devices. Protocol compatibility is not assumed between models.
 
 Bluetooth control is currently not supported.
 
 ## Features
 
-- **DPI Control** - Adjust mouse sensitivity, configure DPI stages, and customize X/Y axes independently.
-- **Polling Rate** - Configure how frequently the mouse reports its position.
-- **Lift-off Distance** - Adjust the height at which the mouse stops tracking.
-- **Battery Status** - Monitor battery level and charging status from the system tray.
-- **Power Management** - Configure sleep timers and automatic power-saving settings.
-- **Wireless Stability** - Enable or disable wireless stability enhancement.
-- **Bluetooth Smoothing** - Toggle Bluetooth movement smoothing.
-- **Scroll Jump Protection** - Prevent accidental scroll jumps with an adjustable delay.
-- **Device Detection** - Automatically detect supported mice and connection changes.
-- **Battery Notifications (Coming Soon)** - Get notified when the battery is low or critically low.
+- **DPI Control** - Configure mouse sensitivity and DPI stages.
+- **Polling Rate** - Adjust device reporting frequency.
+- **Lift-off Distance** - Configure tracking distance.
+- **Battery Status** - Monitor battery level and charging status.
+- **Battery Notifications** - Receive configurable low and critical battery alerts.
+- **Power Management** - Configure sleep timers and power-saving settings.
+- **Wireless Stability** - Configure wireless stability enhancement.
+- **Bluetooth Smoothing** - Configure Bluetooth movement smoothing.
+- **Scroll Jump Protection** - Prevent accidental scroll jumps.
+- **Multi-device Support** - Manage multiple devices, including devices of the same model.
+- **Device Detection** - Automatically detect supported devices and connection changes.
+
+Feature availability varies by device model.
+
+For detailed feature compatibility and device-specific settings, see [Supported Features](FEATURES.md).
 
 ## Installation
 
@@ -37,24 +43,24 @@ Install both packages for your distribution.
 
 ```bash
 sudo pacman -U \
-  ./steelseries-linux-0.4.1-1-x86_64.pkg.tar.zst \
-  ./steelseries-linux-gui-0.4.1-1-x86_64.pkg.tar.zst
+  ./steelseries-linux-1.0.0-1-x86_64.pkg.tar.zst \
+  ./steelseries-linux-gui-1.0.0-1-x86_64.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
 
 ```bash
 sudo apt install \
-  ./steelseries-linux_0.4.1-1_amd64.deb \
-  ./steelseries-linux-gui_0.4.1-1_amd64.deb
+  ./steelseries-linux_1.0.0-1_amd64.deb \
+  ./steelseries-linux-gui_1.0.0-1_amd64.deb
 ```
 
 ### Fedora
 
 ```bash
 sudo dnf install \
-  ./steelseries-linux-0.4.1-1.fc45.x86_64 \
-  ./steelseries-linux-gui-0.4.1-1.fc45.x86_64
+  ./steelseries-linux-1.0.0-1.fc45.x86_64.rpm \
+  ./steelseries-linux-gui-1.0.0-1.fc45.x86_64.rpm
 ```
 
 The `steelseries-linux` package provides the CLI (`steelseriesctl`) and required udev rules. The `steelseries-linux-gui` package provides the graphical application and depends on the CLI package.
@@ -82,9 +88,15 @@ steelseriesctl dpi set 400 800 1600
 # Switch to a DPI stage
 steelseriesctl dpi use 2
 
-# Get and configure polling rate
+# Get polling rates for the selected device
 steelseriesctl polling get
-steelseriesctl polling set wireless 1000
+
+# Set the rate on a device with one polling mode, such as Aerox 3 Wired
+steelseriesctl polling set 500
+
+# Specify the mode on a device that supports both
+steelseriesctl polling set wired 1000
+steelseriesctl polling set wireless 4000
 
 # Get and configure lift-off distance
 steelseriesctl lod get
@@ -109,6 +121,31 @@ steelseriesctl bluetooth-smoothing set on
 steelseriesctl scroll-jump set on
 ```
 
+### Device Selection
+
+When multiple supported devices are connected, use `--device` (or `-d`) to select a specific device by its ID.
+
+```bash
+# List available devices
+steelseriesctl device list
+
+# Get device information
+steelseriesctl --device <ID> device describe
+
+# Get DPI settings
+steelseriesctl --device <ID> dpi get
+
+# Get device settings as JSON
+steelseriesctl --device <ID> --json device snapshot
+```
+
+For devices without a hardware ID or USB serial number, a Custom ID is generated using the device model and physical USB port location. This ID may change when the device is connected to a different USB port.
+
+### Shell Completion
+
+The CLI packages install Bash, Zsh, and Fish completions automatically.
+Press Tab to complete commands, options, polling rates, or connected device IDs.
+
 ### Output Formats
 
 For scripting and integration with other tools:
@@ -126,19 +163,13 @@ steelseriesctl --json battery get
 
 ## Roadmap
 
-### v0.5
-
-- Battery notifications
-- Improve recovery when USB/2.4 GHz endpoints change or a device reconnects.
-- Aerox 3 Wired support (Probably)
-
-### Later
-
+- Additional SteelSeries mouse support
+- SteelSeries headset support
+- SteelSeries keyboard support
 - Onboard/default lighting research
-- Additional SteelSeries devices
-- Button mapping / remapping research
+- Button mapping and remapping research
 
-RGB animation streaming is intentionally not a current priority; onboard/default lighting behavior may be investigated separately.
+RGB animation streaming is intentionally not a current priority. Onboard/default lighting behavior may be investigated separately.
 
 ## Disclaimer
 

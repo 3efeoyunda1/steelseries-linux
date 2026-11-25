@@ -1,24 +1,32 @@
 use std::fmt;
 
 /// A model whose USB identity and protocol have been independently verified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceModel {
     Aerox3WirelessGen2,
+    Aerox3Wired,
 }
 
 impl fmt::Display for DeviceModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Aerox3WirelessGen2 => f.write_str("Aerox 3 Wireless Gen 2"),
-        }
+        f.write_str(self.name())
     }
 }
 
 impl DeviceModel {
     #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Aerox3WirelessGen2 => "Aerox 3 Wireless Gen 2",
+            Self::Aerox3Wired => "Aerox 3 Wired",
+        }
+    }
+
+    #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
             Self::Aerox3WirelessGen2 => "aerox_3_wireless_gen2",
+            Self::Aerox3Wired => "aerox_3_wired",
         }
     }
 }
@@ -68,7 +76,9 @@ pub struct DpiCapabilities {
     pub min: u16,
     pub max: u16,
     pub step: u16,
+    pub min_stages: usize,
     pub max_stages: usize,
+    pub active_stage_selection: bool,
     pub independent_axes: bool,
 }
 
@@ -150,6 +160,7 @@ pub struct RecommendedRange<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SleepTimerCapabilities {
+    pub supported: bool,
     pub min: u64,
     pub max: u64,
     pub step: u64,
@@ -288,6 +299,7 @@ pub struct DeviceCapabilities {
     pub power: PowerCapabilities,
     pub wireless_features: WirelessFeatureCapabilities,
     pub scroll_jump: ScrollJumpCapabilities,
+    pub commit: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,24 +308,66 @@ pub enum BatteryStatus {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdentitySource {
+    Hardware,
+    Serial,
+    Custom,
+}
+
+impl IdentitySource {
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Hardware => "hardware",
+            Self::Serial => "serial",
+            Self::Custom => "custom",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Hardware | Self::Serial => "ID",
+            Self::Custom => "Custom ID",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DeviceIdentity(String);
+pub struct DeviceIdentity {
+    value: String,
+    source: IdentitySource,
+}
 
 impl DeviceIdentity {
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        Self::with_source(value, IdentitySource::Hardware)
+    }
+
+    #[must_use]
+    pub fn with_source(value: impl Into<String>, source: IdentitySource) -> Self {
+        Self {
+            value: value.into(),
+            source,
+        }
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> IdentitySource {
+        self.source
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.value
     }
 }
 
 impl fmt::Display for DeviceIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 

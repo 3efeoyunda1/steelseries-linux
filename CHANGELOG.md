@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.0
+
+### Added
+
+- Automatic Bash, Zsh, and Fish completion in CLI packages, including connected device IDs
+- Aerox 3 Wired (`1038:1836`) support with DPI stages, active-stage selection, wired polling rates, and persistent settings
+- Model registry and shared device driver interface for multiple supported models and multiple physical devices of the same model
+- Project-owned device identification with hardware, USB serial, and deterministic physical-port-based Custom ID sources
+- Model-specific embedded product images in the device list, with a fallback for models without images
+- Configurable low and critical battery notifications and an About page in the GUI
+- Aerox 3 Wired configuration-interface udev permissions
+
+### Changed
+
+- Allow `polling set <HZ>` on devices with one polling mode and use the selected device capabilities to validate explicit modes and rates
+- Device discovery selects the physical HID endpoint and preserves Aerox 3 Wireless Gen 2 USB and 2.4 GHz endpoint grouping
+- CLI device JSON includes string IDs, identity sources, connection availability, and battery support; capability and snapshot output reflect the selected model
+- GUI device controls and snapshot handling follow each model's capabilities, including the Wired model's DPI and polling controls
+- Battery device priority includes devices with battery support
+- Returning to the device list starts a fresh discovery
+- DPI and polling cards use the available dashboard width when there are no additional feature cards
+- Core, CLI, and GUI inherit version 1.0.0 from the Cargo workspace
+- Device refresh interval choices now include 5 seconds
+
+### Fixed
+
+- Reject ambiguous device IDs and avoid selecting another device when the requested device disconnects
+- Serialize HID sessions on the same device and validate Wired report lengths, response opcodes, acknowledgements, and timeouts
+- Reject invalid Wired DPI stages, active indexes, sensor codes, and polling codes
+- Preserve valid active DPI selection when Wired presets are edited or removed
+- Accept Wired snapshots that omit unsupported wireless, battery, and power fields
+- Restore consistent DPI input dimensions and device-card text alignment for Wired devices
+- Avoid showing stale device-list results after navigating back from a disconnected device
+
 ## 0.4.1
 
 ### Added
