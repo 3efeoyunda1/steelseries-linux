@@ -3,7 +3,7 @@ Version:        0.4.1
 Release:        1%{?dist}
 Summary:        Linux configuration CLI for supported SteelSeries devices
 
-License:        MIT
+License:        MIT AND BSD-3-Clause
 URL:            https://github.com/3efeoyunda1/steelseries-linux
 Source0:        %{name}-%{version}.tar.gz
 
@@ -23,6 +23,8 @@ Gen 2 over wired USB and its linked 2.4 GHz receiver.
 
 %package gui
 Summary:        Graphical application for SteelSeries Linux
+# The image identifier records an unresolved permission status for upstream builds.
+License:        MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND Unicode-3.0 AND Unlicense AND Zlib AND LicenseRef-Slint-Royalty-free-2.0 AND LicenseRef-SteelSeries-Images-Unverified
 Requires:       %{name}%{?_isa} = %{version}-%{release}
 # Winit loads these libraries at runtime, so RPM cannot detect them from ELF.
 Requires:       libwayland-client.so.0()(64bit)
@@ -76,7 +78,7 @@ if command -v udevadm >/dev/null 2>&1; then
 fi
 
 %files
-%license LICENSE
+%license LICENSE THIRD_PARTY_LICENSES.md
 %doc README.md
 %{_bindir}/steelseriesctl
 %{_datadir}/bash-completion/completions/steelseriesctl
@@ -85,7 +87,7 @@ fi
 %{_udevrulesdir}/70-steelseries-linux.rules
 
 %files gui
-%license LICENSE crates/vendor/softbuffer/LICENSE-MIT
+%license LICENSE THIRD_PARTY_LICENSES.md crates/vendor/softbuffer/LICENSE-MIT
 %{_bindir}/steelseries-linux-gui
 %{_datadir}/applications/steelseries-linux-gui.desktop
 %{_datadir}/icons/hicolor/scalable/apps/steelseries-linux-gui.svg

@@ -3,10 +3,10 @@ name = "steelseries-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-publish = false
 
 [dependencies]
 hidapi.workspace = true

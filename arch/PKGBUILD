@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="Linux configuration tools for supported SteelSeries devices"
 arch=('x86_64')
 url="https://github.com/3efeoyunda1/steelseries-linux"
-license=('MIT')
+license=('MIT AND BSD-3-Clause')
 options=('!lto' '!debug')
 makedepends=('cargo' 'rust' 'pkgconf' 'fontconfig' 'systemd')
 source=("${pkgbase}-${pkgver}.tar.gz::${url}/archive/refs/tags/${pkgver}.tar.gz")
@@ -48,6 +48,7 @@ package_steelseries-linux() {
   install -Dm644 udev/70-steelseries-linux.rules \
     "${pkgdir}/usr/lib/udev/rules.d/70-steelseries-linux.rules"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 THIRD_PARTY_LICENSES.md "${pkgdir}/usr/share/licenses/${pkgname}/THIRD_PARTY_LICENSES.md"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
 }
 
@@ -55,6 +56,7 @@ package_steelseries-linux-gui() {
   cd "${pkgbase}-${pkgver}"
 
   pkgdesc="Graphical application for SteelSeries Linux"
+  license=('MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND Unicode-3.0 AND Unlicense AND Zlib AND LicenseRef-Slint-Royalty-free-2.0 AND LicenseRef-SteelSeries-Images-Unverified')
   depends=("steelseries-linux=${pkgver}-${pkgrel}" 'glibc' 'gcc-libs' 'fontconfig' 'wayland' 'libxkbcommon' 'libx11' 'libxcursor' 'libxi' 'libxrandr')
 
   install -Dm755 "${srcdir}/target/release/steelseries-linux-gui" \
@@ -64,5 +66,6 @@ package_steelseries-linux-gui() {
   install -Dm644 assets/app/steelseries-linux-gui.svg \
     "${pkgdir}/usr/share/icons/hicolor/scalable/apps/steelseries-linux-gui.svg"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 THIRD_PARTY_LICENSES.md "${pkgdir}/usr/share/licenses/${pkgname}/THIRD_PARTY_LICENSES.md"
   install -Dm644 crates/vendor/softbuffer/LICENSE-MIT "${pkgdir}/usr/share/licenses/${pkgname}/softbuffer-MIT"
 }

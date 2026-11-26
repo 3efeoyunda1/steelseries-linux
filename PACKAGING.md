@@ -105,6 +105,36 @@ Build both packages:
 
 Generated packages are placed in `dist/fedora/`.
 
+## Package Licenses
+
+The project's own source code is MIT-licensed. Both binary packages include
+the root `LICENSE` and the full workspace-wide `THIRD_PARTY_LICENSES.md`
+report. The report may list dependencies used by the other package or only
+during the build. Packaging uses the checked-in report. Update it when
+dependency licensing changes.
+
+| Package format | Installed location |
+|----------------|--------------------|
+| Arch / CachyOS | `/usr/share/licenses/<package-name>/` |
+| Debian / Ubuntu | `/usr/share/doc/<package-name>/`, alongside `copyright` |
+| Fedora | `/usr/share/licenses/<package-name>/` via RPM `%license` |
+
+Debian packaging also embeds the full report in the installed DEP-5
+`copyright` file, keeping the notices available in Debian's standard
+copyright location.
+
+Arch and RPM metadata describe the bundled components of each binary package.
+The CLI includes the MIT Rust HIDAPI bindings and the BSD-3-Clause native
+backend. The GUI includes Slint under its Royalty-free 2.0 terms and other
+third-party libraries listed in the report.
+
+Redistribution permission for the SteelSeries product images embedded in the
+GUI has not been verified. The project's MIT grant excludes those images.
+`LicenseRef-SteelSeries-Images-Unverified` records that unresolved status in
+upstream package metadata. It grants no permissions. Review the images and
+Slint's license and attribution terms before distribution. Building an RPM
+does not establish eligibility for the official Fedora repositories.
+
 ## Package Verification
 
 Inspect the generated packages using the distribution's native tools.
@@ -134,6 +164,11 @@ done
 ```
 
 Before distributing packages, verify that both packages were generated, their versions match, and their contents and dependencies are correct.
+The native build scripts verify both license files against the repository
+copies before copying the packages to `dist/`. They also check Debian's
+`copyright` file, RPM's `%license` flags, and the exclusion of local license
+generation templates. A missing source file or mismatched package entry fails
+the build.
 
 ## Installation
 

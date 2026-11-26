@@ -15,6 +15,7 @@ cp -a \
     "${repo_root}/assets" \
     "${repo_root}/udev" \
     "${repo_root}/LICENSE" \
+    "${repo_root}/THIRD_PARTY_LICENSES.md" \
     "${repo_root}/README.md" \
     "${repo_root}/debian" \
     "$source_dir/"
@@ -35,7 +36,7 @@ fi
 tar -czf "${build_root}/steelseries-linux_${version}.orig.tar.gz" \
     --transform "s,^,steelseries-linux-${version}/," \
     -C "$repo_root" \
-    Cargo.toml Cargo.lock crates assets udev LICENSE README.md
+    Cargo.toml Cargo.lock crates assets udev LICENSE THIRD_PARTY_LICENSES.md README.md
 
 (
     cd "$source_dir"
@@ -83,5 +84,6 @@ do
     "${repo_root}/scripts/verify-package-completions.sh" "$name" <<EOF
 $files
 EOF
+    "${repo_root}/scripts/verify-package-licenses.sh" debian "$name" "$package"
     cp -f "$package" "$output_dir/"
 done

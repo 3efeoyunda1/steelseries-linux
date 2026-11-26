@@ -4,6 +4,13 @@
 # Package build artifacts
 /dist/
 
+# Local license generation
+/about.toml
+/about.hbs
+/about.md.hbs
+/THIRD_PARTY_LICENSES.html
+/THIRD_PARTY_LICENSES.md.tmp
+
 # Local Docker packaging tools
 /scripts/docker/
 /scripts/build-all.sh

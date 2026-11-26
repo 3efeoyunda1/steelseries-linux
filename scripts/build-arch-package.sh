@@ -20,7 +20,7 @@ mv "${build_root}/PKGBUILD.versioned" "${build_root}/PKGBUILD"
 tar -czf "$source_archive" \
     --transform "s,^,steelseries-linux-${version}/," \
     -C "$repo_root" \
-    Cargo.toml Cargo.lock crates assets udev LICENSE README.md
+    Cargo.toml Cargo.lock crates assets udev LICENSE THIRD_PARTY_LICENSES.md README.md
 
 (
     cd "$build_root"
@@ -36,5 +36,6 @@ for package in "${build_root}"/steelseries-linux*-"${version}"-*.pkg.tar.zst; do
     "${repo_root}/scripts/verify-package-completions.sh" "$name" <<EOF
 $files
 EOF
+    "${repo_root}/scripts/verify-package-licenses.sh" arch "$name" "$package"
     cp -f "$package" "$output_dir/"
 done

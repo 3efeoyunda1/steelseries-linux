@@ -1,6 +1,12 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: steelseries-linux
 Source: https://github.com/3efeoyunda1/steelseries-linux
+Comment: Both binary packages include THIRD_PARTY_LICENSES.md in their own
+ documentation directory. This workspace-wide report contains third-party
+ copyright notices and license texts, including MIT for the Rust HIDAPI
+ bindings, BSD-3-Clause for their bundled C backend in the CLI, and the
+ Slint Royalty-free 2.0 terms for the GUI. Its complete text is included
+ below in each installed copyright file.
 
 Files: *
 Copyright: 2026 Efe Can Karaoglan
@@ -8,7 +14,19 @@ License: MIT
 
 Files: crates/vendor/softbuffer/*
 Copyright: 2022 Kirill Chibisov
-License: MIT
+License: MIT or Apache-2.0
+Comment: The GUI uses the MIT option. The vendored directory contains both
+ upstream license files.
+
+Files: assets/devices/aerox_3_wired.png assets/devices/aerox_3_wireless_gen2.png
+Copyright: Unverified
+License: LicenseRef-SteelSeries-Images-Unverified
+ Redistribution permission for these SteelSeries product images has not
+ been verified. The project MIT grant does not cover these images.
+
+License: Apache-2.0
+ On Debian systems the full license text is available in
+ /usr/share/common-licenses/Apache-2.0.
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy

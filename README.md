@@ -1,5 +1,7 @@
 # SteelSeries Linux
 
+[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
+
 An unofficial, open-source Linux control utility for supported SteelSeries devices.
 
 SteelSeries Linux provides native device configuration through a command-line interface and a graphical application, without requiring SteelSeries GG or Wine.
@@ -31,7 +33,7 @@ Bluetooth control is currently not supported.
 
 Feature availability varies by device model.
 
-For detailed feature compatibility and device-specific settings, see [Supported Features](FEATURES.md).
+For detailed feature compatibility and device-specific settings, see [Device Compatibility](#device-compatibility).
 
 ## Installation
 
@@ -66,6 +68,46 @@ sudo dnf install \
 The `steelseries-linux` package provides the CLI (`steelseriesctl`) and required udev rules. The `steelseries-linux-gui` package provides the graphical application and depends on the CLI package.
 
 For native package building and inspection instructions, see [PACKAGING.md](PACKAGING.md).
+
+## Device Compatibility
+
+| Feature | Aerox 3 Wireless Gen 2 | Aerox 3 Wired |
+| --- | :---: | :---: |
+| DPI Control | ✅ | ✅ |
+| DPI Range | 50–26,000 | 200–8,500 |
+| DPI Step | 50 | 100 |
+| DPI Stages | 1–5 | 1–5 |
+| Active DPI Stage Selection | ✅ | ✅ |
+| Independent X/Y DPI | ✅ | ❌ |
+| Wired Polling Rate | Up to 1000 Hz | Up to 1000 Hz |
+| Wireless Polling Rate | Up to 4000 Hz | ❌ |
+| Lift-off Distance | ✅ | ❌ |
+| Per-stage Lift-off Distance | ✅ | ❌ |
+| Battery Status | ✅ | ❌ |
+| Charging Status | ✅ | ❌ |
+| Battery Notifications | ✅ | ❌ |
+| Low Power Mode | ✅ | ❌ |
+| Low Power Polling Rate | ✅ | ❌ |
+| Automatic Low Power Mode | ✅ | ❌ |
+| Sleep Timer | ✅ | ❌ |
+| Wireless Stability Enhancement | ✅ | ❌ |
+| Bluetooth Smoothing | ✅ | ❌ |
+| Scroll Jump Protection | ✅ | ❌ |
+| Persistent Settings | ✅ | ✅ |
+| Acceleration / Deceleration | 🟡 | 🟡 |
+| Angle Snapping | 🟡 | 🟡 |
+| Angle Rotation | 🟡 | ❌ |
+| RGB Lighting Control | 🟡 | 🟡 |
+| RGB Brightness Control | 🟡 | 🟡 |
+| RGB Animation Effects | 🟡 | 🟡 |
+| Button Remapping | 🟡 | 🟡 |
+| Macro Configuration | 🟡 | 🟡 |
+
+**Legend**
+
+- ✅ Supported by SteelSeries Linux
+- 🟡 Supported by the device or its official software, but not implemented in SteelSeries Linux
+- ❌ Not available on the device
 
 ## Usage
 
@@ -179,4 +221,9 @@ SteelSeries and its product names are trademarks of their respective owners.
 
 ## License
 
-MIT
+The project's original source code is licensed under the [MIT License](LICENSE).
+
+Third-party dependency licenses are available in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+Redistribution permission for the SteelSeries product images has not been verified.
+The project MIT license excludes those images.

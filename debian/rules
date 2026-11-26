@@ -11,3 +11,12 @@ override_dh_auto_build:
 
 override_dh_auto_test:
 	$(CARGO) test --workspace --locked
+
+execute_after_dh_installdocs:
+	set -e; for package in $(shell dh_listpackages); do \
+		sh debian/render-copyright.sh debian/copyright THIRD_PARTY_LICENSES.md \
+			> "debian/$$package/usr/share/doc/$$package/copyright"; \
+	done
+
+override_dh_compress:
+	dh_compress -XTHIRD_PARTY_LICENSES.md

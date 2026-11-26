@@ -1,3 +1,5 @@
 target/release/steelseries-linux-gui usr/bin
 assets/app/steelseries-linux-gui.desktop usr/share/applications
 assets/app/steelseries-linux-gui.svg usr/share/icons/hicolor/scalable/apps
+LICENSE usr/share/doc/steelseries-linux-gui
+THIRD_PARTY_LICENSES.md usr/share/doc/steelseries-linux-gui
