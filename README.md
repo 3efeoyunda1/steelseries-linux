@@ -224,6 +224,4 @@ SteelSeries and its product names are trademarks of their respective owners.
 The project's original source code is licensed under the [MIT License](LICENSE).
 
 Third-party dependency licenses are available in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-
-Redistribution permission for the SteelSeries product images has not been verified.
 The project MIT license excludes those images.
