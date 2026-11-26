@@ -1,6 +1,6 @@
 # SteelSeries Linux
 
-[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
+[![Made with Slint](https://slint.dev/logo/MadeWithSlint-logo-dark.svg)](https://slint.dev)
 
 An unofficial, open-source Linux control utility for supported SteelSeries devices.
 
